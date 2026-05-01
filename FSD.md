@@ -191,17 +191,11 @@ As long as your router does not have a port-forwarding rule pointing external tr
 
 ### 3.2 Server — Laptop Backend
 
-**Why FastAPI + Uvicorn?**
-FastAPI is a modern Python web framework built on top of ASGI (Asynchronous Server Gateway Interface). It was chosen because:
-- It handles async data fetching natively — all external API calls (Google Calendar, Polygon, Open-Meteo, Claude) run concurrently without blocking each other, so the render cycle is fast.
-- It has built-in support for proper HTTP headers like `ETag` and `304 Not Modified`, which are central to this project's efficiency.
-- It is lightweight — no database, no ORM, no complexity beyond what's needed.
-- It has excellent documentation and Claude Code handles it well.
-
-Uvicorn is the ASGI server that actually runs FastAPI. Think of FastAPI as the application and Uvicorn as the engine that runs it — similar to how a website is the content and Apache/Nginx is the server that delivers it. Together they are the standard pairing for Python async web services.
-
-**Why not Flask / Django?**
-Flask is synchronous by default, which would mean fetching calendar + weather + stocks + Claude one after another (slow). Django is far heavier than needed for a local single-endpoint image server.
+**FastAPI + Uvicorn**
+FastAPI will be used for:
+- Handlin sync data fetching natively — all external API calls (Google Calendar, Polygon, Open-Meteo, Claude) run concurrently without blocking each other.
+- Handle proper HTTP headers like `ETag` and `304 Not Modified`, which will be used by E1001 firmware to decide to refresh the screen.
+- Uvicorn is the ASGI server that runs the FastAPI service.
 
 **Process management on Windows 10:**
 On Windows 10, the recommended approach is to run the FastAPI server as a **Windows Service** using the `NSSM` (Non-Sucking Service Manager) tool. This ensures the server starts automatically when Windows boots, restarts on crash, and runs in the background without a terminal window.
@@ -236,7 +230,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 | OS | Windows 10 |
 | Python version | 3.12 |
 | Always-on | Yes |
-| Server framework | FastAPI + Uvicorn (see rationale above) |
+| Server framework | FastAPI + Uvicorn |
 | Image rendering | Pillow (PIL) |
 | Process management | NSSM Windows Service (production) / terminal run (development) |
 
@@ -258,8 +252,6 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 - **Cache control:** ETag-based — E1001 sends `If-None-Match` header; server returns `304` if unchanged
 - **Security:** Local network only. No TLS required for v1. Server is not exposed externally.
 
-If you later wish to access the dashboard remotely (e.g. to force a refresh from your phone), add a reverse proxy with HTTPS and a bearer token rather than exposing port 8080 directly.
-
 ---
 
 ## 4. Display Layout & Visual Design
@@ -280,11 +272,11 @@ The 800×480 canvas is divided into five zones. The clock is centered, weather i
 │  ⛅ Partly Cloudy  │   07:42       │  09:00  Standup            │
 │  ↑24°  ↓14°        │               │  12:30  Lunch w/ Ana       │
 │  Rain 40%          │               │  15:00  Dentist            │
-│  Wind 18 km/h      │               │  18:30  Birthday: Mum      │
+│                    │               │  18:30  Birthday: Mum      │
 │                    │               │                            │
 ├────────────────────┴───────────────┴────────────────────────────┤  y=320
 │                       STOCKS BAR                                │  h=80
-│  AAPL $189  ▲1.2%   TSLA $172  ▼0.8%   SPY $524  ▲0.4%        │
+│  AAPL $189  ▲1.2%   TSLA $172  ▼0.8%   SPY $524  ▲0.4%          │
 │  [AI: Hold AAPL — momentum positive but nearing resistance]     │
 ├─────────────────────────────────────────────────────────────────┤  y=400
 │                       QUOTE OF THE DAY                          │  h=80
@@ -538,13 +530,12 @@ This gives you one meaningful morning context snapshot and one live afternoon up
 | Rain | 61–67 | `󰖖` (nf-md-weather_pouring) |
 | Thunderstorm | 95–99 | `󰖓` (nf-md-weather_lightning_rainy) |
 | Snow | 71–77, 85–86 | `󰖘` (nf-md-weather_snowy) |
-| Windy | wind_speed > 40 km/h (any) | `󰖞` (nf-md-weather_windy) |
 
 > Icons are rendered server-side using the NerdFontsSymbolsOnly TTF at 48pt. The icon is drawn in the weather zone above the text fields.
 
 **Update frequency:** Once daily at 05:45. Weather data for the full day (including min/max) is fetched in one API call and cached. Not re-fetched for the evening window since daily min/max do not change.
 
-**Units:** Celsius, km/h.
+**Units:** Celsius.
 
 ---
 
@@ -667,13 +658,13 @@ The error screen is a simple full refresh displaying:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                                                         │
-│   ⚠  Wi-Fi connection failed                           │
+│   ⚠  Wi-Fi connection failed                            │
 │                                                         │
 │   Could not connect to: <SSID>                          │
-│   Retrying in 5 minutes.                               │
+│   Retrying in 5 minutes.                                │
 │                                                         │
-│   Check that the network is available and that the     │
-│   SSID and password in firmware config are correct.    │
+│   Check that the network is available and that the      │
+│   SSID and password in firmware config are correct.     │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -682,7 +673,7 @@ The error text is rendered directly on the ESP32 using the UC8179 driver with a 
 
 ### 7.4 Build Configuration (ESP-IDF `CMakeLists.txt` + `sdkconfig`)
 
-ESP-IDF uses CMake as its build system, not `platformio.ini`. The project structure is:
+ESP-IDF uses CMake as its build system. The project structure is:
 
 ```
 firmware/
@@ -764,9 +755,9 @@ idf.py -p /dev/ttyUSB0 flash
 // ============================================================
 
 // Wi-Fi
-#define WIFI_SSID           "<!-- your home Wi-Fi SSID -->"
-#define WIFI_PASSWORD       "<!-- your Wi-Fi password -->"
-#define WIFI_RETRY_MAX      3
+#define WIFI_SSID           "Eli"
+#define WIFI_PASSWORD       "1020304050"
+#define WIFI_RETRY_MAX      5
 #define WIFI_TIMEOUT_MS     15000
 
 // Server
@@ -988,7 +979,7 @@ server/.env
 
 | Failure scenario | Behaviour |
 |---|---|
-| **Wi-Fi fails at boot (E1001)** | Retry 3 times with 5s delay. On final failure: display Wi-Fi error screen (see §7.3), deep sleep 5 min, retry |
+| **Wi-Fi fails at boot (E1001)** | Retry 5 times with 5s delay. On final failure: display Wi-Fi error screen (see §7.3), deep sleep 5 min, retry |
 | **NTP sync fails (E1001)** | Use RTC time, log warning to UART serial. Continue normally — time may drift slightly |
 | **Server unreachable (E1001)** | Use last displayed image (no update). Sleep and retry next minute |
 | **Google Calendar API error** | Display `Calendar unavailable` in calendar zone. Do not show stale data |
