@@ -179,7 +179,7 @@ Your router's firewall blocks inbound connections by default. As long as you hav
 | Item | Value |
 |---|---|
 | Network type | Home LAN — Laptop via Ethernet, E1001 via 2.4GHz Wi-Fi |
-| Laptop connection | Ethernet (Wi-Fi non-functional) |
+| Laptop connection | Ethernet |
 | Laptop static IP | <!-- Fill in after running ipconfig — e.g. 192.168.1.50 --> |
 | Laptop hostname | <!-- Run `hostname` in PowerShell — e.g. ASUS-HOME --> |
 | Server port | `8080` |
