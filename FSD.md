@@ -1,5 +1,5 @@
 # Functional Specification: ePaper Smart Dashboard System
-**Document version:** 0.4 — Draft  
+**Document version:** 0.5 — Draft  
 **Last updated:** 1.5.2026  
 **Author:** Eli Zeltser  
 **Status:** In Progress
@@ -15,7 +15,7 @@
 5. [Update Schedule & Screen Management](#5-update-schedule--screen-management)
 6. [Data Integration Specifications](#6-data-integration-specifications)
    - 6.1 [Google Calendar](#61-google-calendar)
-   - 6.2 [Stock Data, Portfolio & AI Suggestions](#62-stock-data-portfolio--ai-suggestions)
+   - 6.2 [Stock Data & Portfolio](#62-stock-data--portfolio)
    - 6.3 [Weather](#63-weather)
    - 6.4 [Clock & Date](#64-clock--date)
    - 6.5 [Quote of the Day](#65-quote-of-the-day)
@@ -34,7 +34,7 @@
 
 ### 1.1 Purpose
 
-This document describes the functional requirements of a personal smart dashboard built on a **Seeed Studio reTerminal E1001** 7.5-inch monochrome ePaper display. The system provides an at-a-glance view of time, weather, birthday reminders, stock portfolio status, and a daily quote during defined morning and evening periods. An AI layer provides portfolio-aware buy/hold/sell suggestions and generates the daily quote. All dashboard content and configuration is manageable via a local web admin panel.
+This document describes the functional requirements of a personal smart dashboard built on a **Seeed Studio reTerminal E1001** 7.5-inch monochrome ePaper display. The system provides an at-a-glance view of time, weather, birthday reminders, stock portfolio status, and a daily quote during defined morning and evening periods. All dashboard content and configuration is manageable via a local web admin panel.
 
 ### 1.2 Goals
 
@@ -47,9 +47,10 @@ This document describes the functional requirements of a personal smart dashboar
 
 ### 1.3 Non-Goals
 
-- This is not a real-time trading terminal. Stock suggestions are informational only and not financial advice.
+- This is not a real-time trading terminal. Stock data is informational only and not financial advice.
 - The display is not interactive beyond the green button manual refresh (v1).
 - The system does not need to function when the laptop server is off or unreachable.
+- No Claude API key is used in this version — all AI features are deferred to a future version.
 
 ### 1.4 Intended Users
 
@@ -76,7 +77,7 @@ The system follows a **server-rendered pull model**. The laptop serves as the in
 │   Google Calendar            │               │
 │   Polygon.io          FastAPI HTTP :8080      │
 │   Open-Meteo                 │               │
-│   Claude API          ┌──────┴──────┐        │
+│                       ┌──────┴──────┐        │
 │                       │ Admin Panel │        │
 │  ┌────────────────┐   │ (Web UI)    │        │
 │  │ portfolio.json │   └─────────────┘        │
@@ -104,9 +105,9 @@ The system follows a **server-rendered pull model**. The laptop serves as the in
 
 ```
 Every render cycle (laptop side):
-  1. Fetch fresh data from all sources (calendar, weather, stocks, quote)
-  2. Load portfolio from portfolio.json
-  3. Call Claude API for portfolio-aware suggestion if trigger conditions met
+  1. Fetch fresh data from all sources (calendar, weather, stocks)
+  2. Load portfolio from portfolio.json — compute P&L summary
+  3. Select today's quote from quotes.json (random, date-seeded)
   4. Composite all data into an 800×480 1-bit PNG
   5. Cache PNG with a new ETag if content changed
   6. Serve via HTTP
@@ -124,38 +125,29 @@ Every poll cycle (E1001 side):
 
 ### 2.3 Network Topology
 
-The laptop's IP is **reserved via DHCP in the router** (`10.100.102.216`). This means the router always assigns the same IP to the laptop's Ethernet adapter based on its MAC address — no Windows-side static IP configuration is needed. The router handles the reservation, Windows uses normal DHCP, and the IP is stable across reboots.
+The laptop's IP is **reserved via DHCP in the router** (`10.100.102.216`). No Windows-side static IP configuration is needed — the router always assigns the same IP to the laptop's Ethernet adapter based on its MAC address.
 
-**No static IP configuration is required on Windows.** The DHCP reservation in the router achieves the same result more reliably.
-
-**How to verify the reservation is working:**
+**Verify the reservation is working:**
 ```powershell
 # Should show 10.100.102.216 under Ethernet adapter
 ipconfig
 
-# Confirm server will be reachable on correct IP after start
+# After starting the server, confirm it's listening:
 netstat -an | findstr "8080"
 ```
 
-**How to check the server is NOT exposed externally:**
-As long as your router has no port-forwarding rule for port 8080, the server is local-only. The default router configuration is closed to inbound connections. To verify:
-```powershell
-# Check what's listening — should show 0.0.0.0:8080, not your public IP
-netstat -an | findstr "8080"
-# Your public IP can be checked at https://whatismyip.com — it differs from 10.100.102.216
-```
+The server is not exposed to the internet. As long as no port-forwarding rule exists for port 8080 in the router, all traffic is local only. Your public IP (check at `https://whatismyip.com`) will differ from `10.100.102.216`.
 
 | Item | Value |
 |---|---|
-| Network type | Home LAN — Laptop via Ethernet, E1001 via 2.4GHz Wi-Fi |
 | Laptop connection | Ethernet |
-| Laptop IP | `10.100.102.216` (DHCP-reserved in router — no Windows config needed) |
+| Laptop IP | `10.100.102.216` (DHCP-reserved — no Windows config needed) |
 | Laptop hostname | `DESKTOP-NJR6V52` |
 | Router gateway | `10.100.102.1` |
 | Server port | `8080` |
-| Admin panel port | `8080` (same server, different routes — see §9) |
-| E1001 IP assignment | `10.100.102.4` (DHCP-reserved in router - no additional config needed) | 
-| External exposure | None — no port forwarding, default router firewall |
+| Admin panel | Same port, routes `/admin/*` |
+| E1001 IP | `10.100.102.4` (DHCP-reserved in router) |
+| External exposure | None — no port forwarding |
 
 ---
 
@@ -188,9 +180,9 @@ netstat -an | findstr "8080"
 
 ### 3.2 Server — Laptop Backend
 
-**FastAPI + Uvicorn** is used because it handles async data fetching natively (all API calls run concurrently), has built-in ETag/`304 Not Modified` support, and is lightweight enough to run as a background Windows service. It also hosts the admin panel on the same server process.
+**FastAPI + Uvicorn** handles async data fetching natively (all API calls run concurrently), has built-in ETag/`304 Not Modified` support, and hosts the admin panel on the same process.
 
-**Virtual environment location:** `C:\Users\Eli Zeltser\Documents\reTerminal\.venv`
+**Virtual environment:** `C:\Users\Eli Zeltser\Documents\reTerminal\.venv`
 
 ```powershell
 # Activate venv (required before any python/pip command)
@@ -202,7 +194,6 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 **NSSM Windows Service** (run once, after development is working):
 ```powershell
-# Open PowerShell as Administrator
 $venvPython = "C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\python.exe"
 $appDir     = "C:\Users\Eli Zeltser\Documents\reTerminal\server"
 
@@ -211,9 +202,9 @@ nssm set EpaperDashboard AppDirectory $appDir
 nssm set EpaperDashboard Start SERVICE_AUTO_START
 nssm start EpaperDashboard
 
-nssm status EpaperDashboard   # check
-nssm stop   EpaperDashboard   # stop
-nssm remove EpaperDashboard confirm  # remove
+nssm status EpaperDashboard
+nssm stop   EpaperDashboard
+nssm remove EpaperDashboard confirm
 ```
 
 **Development run:**
@@ -233,7 +224,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 | Server directory | `C:\Users\Eli Zeltser\Documents\reTerminal\server\` |
 | Server framework | FastAPI + Uvicorn |
 | Image rendering | Pillow (PIL) |
-| Admin panel | Served by same FastAPI process on `/admin` routes |
+| Admin panel | Same FastAPI process, `/admin` routes |
 | Process management | NSSM Windows Service (production) / manual venv run (development) |
 
 ### 3.3 Data Sources
@@ -242,18 +233,17 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 |---|---|---|---|
 | Calendar (birthdays) | Google Calendar API v3 | OAuth2 offline token | 05:45 and 18:00 daily |
 | Stock prices | Polygon.io | API key | 05:45 and 17:30 daily |
-| Stock suggestions | Claude API (Haiku) | API key | On trigger or scheduled fetch |
-| Portfolio data | Local `portfolio.json` | None (local file) | On admin save |
+| Portfolio data | Local `portfolio.json` | None | On admin save |
 | Weather | Open-Meteo (free, no key) | None | Once daily at 05:45 |
-| Quote of the day | Claude API (Haiku) | API key | Once daily at 05:45 |
+| Quote of the day | Local `quotes.json` | None | Daily random selection at 05:45 |
 | Time / Date | E1001 system clock (NTP-synced) | N/A | Every render cycle |
 
 ### 3.4 Communication Layer
 
 - **Protocol:** HTTP/1.1 over home LAN
 - **Display image:** PNG, 1-bit (black/white), 800×480, served with ETag
-- **Admin panel:** HTML pages served by FastAPI on `/admin/*` routes
-- **Data API:** JSON endpoints on `/api/*` routes for admin panel interactions
+- **Admin panel:** HTML pages on `/admin/*` routes (Jinja2 templates)
+- **Data API:** JSON endpoints on `/api/*` routes for admin interactions
 - **Security:** Local network only. No TLS in v1.
 
 ---
@@ -262,7 +252,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 
 ### 4.1 Grid Structure
 
-The 800×480 canvas has five zones. Quote fills the top. Below it: weather on the left, clock (large) in the center-right with birthdays underneath it if any exist. Stocks anchor the bottom. A narrow footer shows date and current time.
+The footer is removed. The canvas has four zones: quote at top, weather left, clock+date+birthdays right, and stocks at the bottom. With the footer gone, both the weather and clock zones are taller.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐ y=0
@@ -270,18 +260,16 @@ The 800×480 canvas has five zones. Quote fills the top. Below it: weather on th
 │   to experience."                      — Frank Herbert, Dune     │
 ├──────────────────┬───────────────────────────────────────────────┤ y=70
 │                  │                                               │
-│  ⛅              │                                               │
-│  Partly Cloudy   │              07:42                            │ clock h=180
-│                  │                                               │
+│  ⛅              │              07:42                            │
+│  Partly Cloudy   │                                               │ h=310
+│                  │          Wednesday, April 6                   │
 │  ↑24°  ↓14°      │                                               │
-│  Rain 40%        ├───────────────────────────────────────────────┤ y=250
-│                  │  🎂 Mum          🎂 Dan                        │ bday h=70
+│  Rain 40%        ├───────────────────────────────────────────────┤ y=290
+│                  │  🎂 Mum          🎂 Dan                        │ h=90
 │                  │                                               │
-├──────────────────┴───────────────────────────────────────────────┤ y=320
-│  AAPL $189  ▲1.2%    TSLA $172  ▼0.8%    SPY $524  ▲0.4%         │ h=90
-│  Portfolio +2.3% today  ·  Hold AAPL, consider trimming TSLA     │
-├──────────────────────────────────────────────────────────────────┤ y=410
-│  Wednesday, 29 April 2026                              07:43     │ h=70
+├──────────────────┴───────────────────────────────────────────────┤ y=380
+│  AAPL $189  ▲1.2%    TSLA $172  ▼0.8%    SPY $524  ▲0.4%         │ h=100
+│  Portfolio: $4,712 total  ·  Today: +$42 (+0.9%)                 │
 └──────────────────────────────────────────────────────────────────┘ y=480
 ```
 
@@ -289,40 +277,39 @@ The 800×480 canvas has five zones. Quote fills the top. Below it: weather on th
 
 | Zone | x | y | w | h | Content |
 |---|---|---|---|---|---|
-| Quote | 0 | 0 | 800 | 70 | Quote (italic, left) + attribution (right-aligned) |
-| Weather | 0 | 70 | 220 | 250 | Icon + description + ↑max ↓min + rain% |
-| Clock | 220 | 70 | 580 | 180 | Large `H:MM`, vertically centered |
-| Birthdays | 220 | 250 | 580 | 70 | `🎂 Name` entries — hidden + clock expands if none |
-| Stocks | 0 | 320 | 800 | 90 | Tickers + portfolio summary line + AI suggestion |
-| Footer | 0 | 410 | 800 | 70 | Date (left) + current time (right) |
+| Quote | 0 | 0 | 800 | 70 | Quote italic (left) + attribution (right-aligned) |
+| Weather | 0 | 70 | 220 | 310 | Icon + description + ↑max ↓min + rain% |
+| Clock | 220 | 70 | 580 | 220 | Large `H:MM` centered, date below |
+| Birthdays | 220 | 290 | 580 | 90 | `🎂 Name` entries — hidden + clock expands if none |
+| Stocks | 0 | 380 | 800 | 100 | Tickers line + portfolio summary line |
 
 **Layout rules:**
 - No zone title labels are shown on screen.
-- If no birthdays today: Birthday zone is hidden; Clock zone expands to `h=250` (y=70 to y=320).
-- Quote strip accommodates up to two lines of text at 16pt — attribution is always on the last line, right-aligned.
-- Stocks zone has two text lines: line 1 = tickers, line 2 = portfolio summary + AI note.
+- If no birthdays today: Birthday zone is hidden; Clock zone expands to `h=310` (y=70 to y=380).
+- Quote strip supports up to two lines of text at 16pt; attribution is always right-aligned on the last line.
+- Stocks zone has two text lines: line 1 = tickers with prices, line 2 = portfolio summary placeholder.
+- The date (`Wednesday, April 6`) is displayed directly below the clock time within the clock zone, centered.
 
 **Dividers:**
 - Horizontal at y=70 (full width)
-- Horizontal at y=250 (x=220 to x=800 — separates clock from birthdays, only when birthdays exist)
-- Horizontal at y=320 (full width)
-- Horizontal at y=410 (full width)
-- Vertical at x=220 (y=70 to y=320)
+- Horizontal at y=290 (x=220 to x=800 — separates clock from birthdays, only when birthdays exist)
+- Horizontal at y=380 (full width)
+- Vertical at x=220 (y=70 to y=380)
 
 ### 4.2 Partial Refresh Region
 
-On each minute-tick, only these two regions are redrawn:
+On each minute-tick, only the clock sub-region is redrawn (clock time + date below it). The footer is removed so there is no second partial region.
 
 | Region | x | y | w | h |
 |---|---|---|---|---|
-| Clock | 220 | 70 | 580 | 180 |
-| Footer time | 590 | 415 | 205 | 50 |
+| Clock + date | 220 | 70 | 580 | 220 |
 
 ### 4.3 Typography
 
 | Element | Font | Size | Style | Notes |
 |---|---|---|---|---|
-| Clock (H:MM) | Inter | 110pt | Bold | Tabular figures — digits don't shift layout |
+| Clock (H:MM) | Montserrat | 120pt | Bold | Tabular figures — digits don't shift layout |
+| Date below clock | Montserrat | 24pt | Regular | `Day, Month D` format — `Wednesday, April 6` |
 | Weather icon | NerdFontsSymbolsOnly | 52pt | Regular | WMO code → glyph (see §6.3) |
 | Weather description | Inter | 17pt | Regular | e.g. "Partly Cloudy" |
 | Weather temp (max/min) | Inter | 20pt | Bold | `↑24°  ↓14°` on one line |
@@ -330,13 +317,12 @@ On each minute-tick, only these two regions are redrawn:
 | Birthday entries | Inter | 20pt | Medium | `🎂 Name` |
 | Stock ticker | JetBrains Mono | 18pt | Bold | |
 | Stock price / change | JetBrains Mono | 17pt | Regular | `▲` / `▼` prefix |
-| Stocks line 2 | Inter | 14pt | Italic | Portfolio summary + AI note, truncated |
-| Quote text | Playfair Display | 16pt | Italic | Multi-line if needed (max 2 lines) |
-| Quote attribution | Inter | 13pt | Regular | Right-aligned on last line, `— Name, Source` |
-| Footer date | Inter | 16pt | Regular | Left-aligned |
-| Footer time | Inter | 16pt | Regular | Right-aligned |
+| Stocks line 2 | Inter | 15pt | Regular | Portfolio summary (static placeholder for now) |
+| Quote text | Playfair Display | 16pt | Italic | Multi-line, max 2 lines |
+| Quote attribution | Inter | 13pt | Regular | Right-aligned, `— Name, Source` |
 
-**Fonts to download** (all free):
+**Fonts to download** (all free from Google Fonts / Nerd Fonts):
+- Montserrat: [fonts.google.com/specimen/Montserrat](https://fonts.google.com/specimen/Montserrat) → `Montserrat-Bold.ttf`, `Montserrat-Regular.ttf`
 - Inter: [fonts.google.com/specimen/Inter](https://fonts.google.com/specimen/Inter) → `Inter-Bold.ttf`, `Inter-Medium.ttf`, `Inter-Regular.ttf`
 - JetBrains Mono: [fonts.google.com/specimen/JetBrains+Mono](https://fonts.google.com/specimen/JetBrains+Mono) → `JetBrainsMono-Bold.ttf`, `JetBrainsMono-Regular.ttf`
 - Playfair Display: [fonts.google.com/specimen/Playfair+Display](https://fonts.google.com/specimen/Playfair+Display) → `PlayfairDisplay-Italic.ttf`
@@ -389,7 +375,7 @@ On each wake:
   ELSE IF in active window:
     → GET /display.png with If-None-Match: <stored_etag>
     IF 200 and ETag changed:
-      IF only clock+footer changed → partial refresh
+      IF only clock+date region changed → partial refresh
       ELSE → fast refresh
     IF 304 → skip update
 
@@ -408,7 +394,7 @@ After 5 consecutive partial/fast refreshes:
 
 ### 5.5 NTP Time Synchronisation
 
-Synced at every boot via `il.pool.ntp.org`. Prevents RTC drift over the max ~10-hour overnight sleep. Falls back to RTC on sync failure; self-corrects next boot.
+Synced at every boot via `il.pool.ntp.org`. Prevents RTC drift over the max ~10-hour overnight sleep (22:00 → 05:45). Falls back to RTC on failure; self-corrects next boot.
 
 ---
 
@@ -428,20 +414,20 @@ Synced at every boot via `il.pool.ntp.org`. Prevents RTC drift over the max ~10-
 
 **Display rules:**
 - Format: `🎂 Name` — no time shown
-- If no birthdays: Birthday zone hidden, Clock expands vertically
+- If no birthdays: Birthday zone hidden, Clock zone expands vertically to fill y=70 to y=380
 - If API unavailable: Birthday zone hidden silently
 
 **Update schedule:** 05:45 and 18:00.
 
 ---
 
-### 6.2 Stock Data, Portfolio & AI Suggestions
+### 6.2 Stock Data & Portfolio
 
-**Purpose:** Show live/close prices for a watchlist, summarise portfolio performance, and display an AI-generated suggestion that is aware of the actual holdings.
+**Purpose:** Show live or previous-close prices for a watchlist, and display a static portfolio summary on screen.
 
 #### 6.2.1 Watchlist
 
-The list of tracked tickers is stored in `server\data\tickers.json` and managed via the admin panel (see §9). It is not hardcoded in `.env`.
+Tracked tickers stored in `server\data\tickers.json`, managed via the admin panel. Not hardcoded anywhere.
 
 ```json
 ["AAPL", "TSLA", "SPY"]
@@ -449,7 +435,7 @@ The list of tracked tickers is stored in `server\data\tickers.json` and managed 
 
 #### 6.2.2 Portfolio Database
 
-Holdings are stored in `server\data\portfolio.json` and managed via the admin panel. The schema:
+Holdings stored in `server\data\portfolio.json`, managed via the admin panel. Schema:
 
 ```json
 {
@@ -481,50 +467,30 @@ At each stock fetch, the server computes for each holding:
 
 **Polygon.io** — API key required.
 
-**Update schedule:**
-
 | Fetch time (Israel) | US market state | Shown as |
 |---|---|---|
 | **05:45** | Pre-market / closed | Previous day close — `[prev. close]` label |
 | **17:30** | Market open (~1 hr in) | Live intraday price, no label |
 
-#### 6.2.4 AI Suggestions (Portfolio-Aware)
+#### 6.2.4 Display on Screen (v1 — Static Placeholder)
 
-The Claude API call includes the full portfolio context so suggestions are personalised to actual holdings.
+The stocks zone shows two lines:
 
-| Property | Value |
-|---|---|
-| Model | `claude-haiku-4-5-20251001` |
-| Max tokens | 80 |
-| Trigger | Price change > 1.5% on any held ticker, or at each scheduled fetch |
-| Cooldown | 30 min per ticker |
-| Prompt template | Stored in `server\data\suggestion_prompt.txt` — editable via admin panel |
-
-**Default prompt template** (`suggestion_prompt.txt`):
+**Line 1 — ticker prices** (live from Polygon.io):
 ```
-You are reviewing a personal stock portfolio.
-
-Portfolio:
-{portfolio_summary}
-
-Today's market data:
-{market_data}
-
-Give a single short sentence (max 15 words) with a buy/hold/sell observation 
-focused on the most significant movement. Be direct and specific.
+AAPL $189  ▲1.2%    TSLA $172  ▼0.8%    SPY $524  ▲0.4%
 ```
 
-The `{portfolio_summary}` token is replaced with a compact text summary of holdings, cost basis, and current P&L. The `{market_data}` token is replaced with today's prices and changes for all tracked tickers.
-
-**Display in stocks zone (line 2):**
+**Line 2 — portfolio summary** (computed from `portfolio.json` + current prices):
 ```
-Portfolio +2.3% today  ·  Hold AAPL, consider trimming TSLA
+Portfolio: $4,712 total  ·  Today: +$42 (+0.9%)
 ```
-Format: `Portfolio [total_pnl_pct]% today  ·  [AI suggestion text]`
 
-If portfolio.json is empty (no holdings defined): line 2 shows only the AI suggestion without portfolio summary.
+If `portfolio.json` has no holdings, line 2 is blank.
 
-> All suggestions are informational only — not financial advice.
+This is a static display — no AI suggestions or recommendations are shown in this version. The portfolio data and P&L calculation are fully implemented; only the AI-generated suggestion text is deferred to a future version when a Claude API key is available.
+
+> All stock data is informational only — not financial advice.
 
 ---
 
@@ -538,7 +504,7 @@ If portfolio.json is empty (no holdings defined): line 2 shows only the AI sugge
 
 | Field | API parameter | Display |
 |---|---|---|
-| Current temperature | `current=temperature_2m` | Inline with icon area |
+| Current temperature | `current=temperature_2m` | Inline with icon |
 | Today max temp | `daily=temperature_2m_max` | `↑ 24°C` |
 | Today min temp | `daily=temperature_2m_min` | `↓ 14°C` |
 | Weather condition | `current=weather_code` | Icon glyph + text description |
@@ -565,43 +531,37 @@ Wind speed is not fetched or displayed.
 
 ### 6.4 Clock & Date
 
+The clock and date are both displayed within the clock zone — time large and centered, date directly below it in a smaller font.
+
 | Element | Format | Example | Location |
 |---|---|---|---|
-| Time (main) | `H:MM` (24h, no leading zero) | `7:42` | Clock zone |
-| Time (footer) | `H:MM` | `7:42` | Footer, right-aligned |
-| Date (footer) | `Day, DD Month YYYY` | `Wednesday, 29 April 2026` | Footer, left-aligned |
+| Time | `H:MM` (24h, no leading zero) | `7:42` | Clock zone, large centered |
+| Date | `Day, Month D` | `Wednesday, April 6` | Clock zone, below time, centered |
 
 **NTP server:** `il.pool.ntp.org`  
 **Timezone:** `Asia/Jerusalem`  
 **POSIX TZ string:** `IST-2IDT,M3.4.4/26,M10.5.0`
 
+No year is shown in the date — day name and month+day only, as this feels more natural at a glance.
+
 ---
 
 ### 6.5 Quote of the Day
 
-**Purpose:** A beautiful or thought-provoking quote at the top of the display, from real people, history, or literature.
+**Purpose:** Display a beautiful or thought-provoking quote at the top of the screen, from real people, history, or literature (Dune, The Alchemist, etc.).
 
-**Generation:** Claude API call once at 05:45, cached all day.
+**Source:** A pre-prepared local file `server\data\quotes.json`. A random quote is selected each morning at 05:45, seeded by the date, so the same quote shows all day and changes each morning. No Claude API is used.
+
+**Selection logic:** `random.seed(today's date as integer) → random.choice(quotes list)`
 
 | Property | Value |
 |---|---|
-| Model | `claude-haiku-4-5-20251001` |
-| Max tokens | 120 |
+| Source | `server\data\quotes.json` |
+| Selection | Date-seeded random — same quote all day, new one each morning |
 | Max displayed chars | 160 (two lines at 16pt in 800px strip) |
-| Fallback | Random entry from `server\data\quotes.json` |
-| Prompt template | Stored in `server\data\quote_prompt.txt` — editable via admin panel |
+| Fallback | If `quotes.json` is missing or empty: display a single hardcoded default quote |
 
-**Default prompt template** (`quote_prompt.txt`):
-```
-Give me one short, memorable quote from a well-known person or from a 
-famous literary work (for example: Dune by Frank Herbert, The Alchemist 
-by Paulo Coelho, a history book, a scientist, artist, or philosopher). 
-The quote should be beautiful, thought-provoking, or uplifting.
-Reply ONLY in this exact format — no other text:
-"Quote text here." — Attribution (e.g. Name, or Name, Book Title)
-```
-
-**Fallback quote list** (`server\data\quotes.json`) — editable via admin panel:
+**Quote file format** (`server\data\quotes.json`) — upload or edit via admin panel:
 ```json
 [
   {
@@ -611,47 +571,40 @@ Reply ONLY in this exact format — no other text:
   {
     "quote": "When you want something, all the universe conspires in helping you to achieve it.",
     "attribution": "Paulo Coelho, The Alchemist"
+  },
+  {
+    "quote": "The only true wisdom is in knowing you know nothing.",
+    "attribution": "Socrates"
   }
 ]
 ```
 
-> **[ EDIT ]** Populate this list with at least 10 entries via the admin panel (see §9.1).
+**Preparation:** Use [claude.ai](https://claude.ai) (which you have access to) to generate a large collection of quotes in this exact JSON format, then upload the file via the admin panel. Aim for at least 100 entries for good variety across the year.
+
+> **[ EDIT ]** The quotes file needs to be prepared and uploaded before the system is fully operational. See §9.1 for how to upload it via the admin panel.
 
 ---
 
 ## 7. Firmware Specification (E1001)
 
-### 7.1 Framework Decision: Zephyr RTOS
+The firmware platform is **Zephyr RTOS**, chosen because Zephyr has official board support for the `reterminal_e1001` and an existing UC8179 ePaper driver compatible with the GDEY075T7 panel (via the ZEReader open-source project).
 
-Zephyr is chosen over ESP-IDF. The deciding reason: the ZEReader open-source project already implements Zephyr with the UC8179 driver for the exact GDEY075T7 panel used in the E1001. This eliminates the highest-risk part of the firmware.
-
-| Criterion | Zephyr | ESP-IDF |
-|---|---|---|
-| Official E1001 board support | ✅ `reterminal_e1001` in mainline | ✅ |
-| UC8179 ePaper driver | ✅ Exists in ZEReader (same panel) | ⚠️ Must be written from scratch |
-| HTTP client | ✅ `net/http_client` | ✅ `esp_http_client` |
-| NTP | ✅ `net/sntp` | ✅ `esp_sntp` |
-| NVS / settings | ✅ `settings` subsystem | ✅ `nvs_flash` |
-| Power management | ✅ `pm` subsystem | ✅ `esp_deep_sleep` |
-| Build tool | `west` (simpler) | `idf.py` |
-| Hassle | **Lower** — driver exists | **Higher** — driver work required |
-
-### 7.2 Libraries & Components
+### 7.1 Libraries & Components
 
 | Item | Zephyr component | Notes |
 |---|---|---|
 | RTOS | Zephyr v3.7+ | Board target: `reterminal_e1001` |
-| ePaper driver | `drivers/display` + UC8179 | Reference: ZEReader project |
+| ePaper driver | `drivers/display` + UC8179 | Reference: ZEReader project on GitHub |
 | PNG decoder | `pngle` (vendored) | Lightweight C library |
 | HTTP client | `net/http_client` | ETag header support |
 | Wi-Fi | `esp_wifi` via Zephyr HAL | |
 | NTP | `net/sntp` | `sntp_simple()` |
-| Settings/storage | `settings` (NVS backend) | ETag, refresh counter |
+| Settings/storage | `settings` (NVS backend) | Stores ETag, refresh counter |
 | Power management | `pm` subsystem | `pm_state_force(PM_STATE_SOFT_OFF)` |
 | GPIO (button) | `gpio` driver | Green button wakeup |
 | RTC | `rtc` driver | Fallback if NTP fails |
 
-### 7.3 Firmware State Machine
+### 7.2 Firmware State Machine
 
 ```
 BOOT (from PM sleep or power-on)
@@ -662,7 +615,7 @@ BOOT (from PM sleep or power-on)
   │     GPIO (green button) → set FORCE_REFRESH flag
   │     Timer              → continue normally
   │
-  ├─► Connect Wi-Fi (timeout 15s, retry 3×)
+  ├─► Connect Wi-Fi (timeout 15s, retry 5×)
   │     FAILURE → render Wi-Fi error screen → PM sleep 5 min → reboot
   │
   ├─► SNTP sync (il.pool.ntp.org)
@@ -689,9 +642,9 @@ BOOT (from PM sleep or power-on)
   └─► Enter PM sleep
 ```
 
-### 7.4 Wi-Fi Error Screen
+### 7.3 Wi-Fi Error Screen
 
-If Wi-Fi fails after 3 retries, display before sleeping:
+If Wi-Fi fails after 5 retries, display before sleeping:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -704,11 +657,11 @@ If Wi-Fi fails after 3 retries, display before sleeping:
 └──────────────────────────────────────────────────────────┘
 ```
 
-### 7.5 Green Button — Manual Full Refresh
+### 7.4 Green Button — Manual Full Refresh
 
-GPIO3 is configured as a wakeup source. Button press during sleep → boot with `FORCE_REFRESH` → unconditional full refresh regardless of ETag → resume normal loop.
+GPIO3 is configured as a wakeup source. Button press during sleep → boot with `FORCE_REFRESH` set → unconditional full refresh regardless of ETag → resume normal loop.
 
-### 7.6 Build Configuration
+### 7.5 Build Configuration
 
 **Project structure:**
 ```
@@ -761,28 +714,24 @@ CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=4096
 
 **Build and flash (from Arch Linux):**
 ```bash
-# One-time workspace setup
 pip install west --break-system-packages
 west init ~/zephyrproject
 cd ~/zephyrproject && west update && west zephyr-export
 west sdk install
 
-# Build
 cd ~/Documents/reTerminal/firmware
 west build -b reterminal_e1001 .
-
-# Flash
 west flash --runner esptool
-# or directly:
+# or:
 esptool.py -c esp32s3 -p /dev/ttyUSB0 write_flash 0x0 build/zephyr/zephyr.bin
 ```
 
-### 7.7 Configuration (`src/config.h`)
+### 7.6 Configuration (`src/config.h`)
 
 ```c
 #define WIFI_SSID           "Eli"
 #define WIFI_PASSWORD       "1020304050"
-#define WIFI_RETRY_MAX      3
+#define WIFI_RETRY_MAX      5
 #define WIFI_TIMEOUT_MS     15000
 
 #define SERVER_HOST         "10.100.102.216"
@@ -834,11 +783,10 @@ C:\Users\Eli Zeltser\Documents\reTerminal\
 │   ├── renderer.py              # Pillow canvas rendering
 │   ├── scheduler.py             # APScheduler tasks
 │   ├── sources\
-│   │   ├── calendar.py
+│   │   ├── calendar.py          # Google Calendar birthday fetch
 │   │   ├── stocks.py            # Polygon.io + portfolio P&L calculation
-│   │   ├── weather.py
-│   │   ├── suggestions.py       # Portfolio-aware Claude suggestion
-│   │   └── quote.py
+│   │   ├── weather.py           # Open-Meteo fetch
+│   │   └── quote.py             # Date-seeded random quote selection
 │   ├── admin\
 │   │   ├── routes.py            # FastAPI admin API routes
 │   │   └── templates\
@@ -847,12 +795,12 @@ C:\Users\Eli Zeltser\Documents\reTerminal\
 │   │       ├── portfolio.html
 │   │       └── stocks.html
 │   ├── data\
-│   │   ├── quotes.json          # Editable fallback quote list
-│   │   ├── quote_prompt.txt     # Editable Claude quote prompt
-│   │   ├── tickers.json         # Editable watchlist
-│   │   ├── suggestion_prompt.txt # Editable Claude suggestion prompt
+│   │   ├── quotes.json          # Quote library — upload via admin panel
+│   │   ├── tickers.json         # Stock watchlist
 │   │   └── portfolio.json       # Holdings database
 │   ├── fonts\
+│   │   ├── Montserrat-Bold.ttf
+│   │   ├── Montserrat-Regular.ttf
 │   │   ├── Inter-Bold.ttf
 │   │   ├── Inter-Medium.ttf
 │   │   ├── Inter-Regular.ttf
@@ -873,6 +821,8 @@ C:\Users\Eli Zeltser\Documents\reTerminal\
     └── CLAUDE.md
 ```
 
+Note: `quote_prompt.txt` and `suggestion_prompt.txt` are removed — no Claude API is used in this version.
+
 **Virtual environment setup (first time):**
 ```powershell
 cd "C:\Users\Eli Zeltser\Documents\reTerminal"
@@ -880,11 +830,11 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install fastapi uvicorn pillow httpx apscheduler jinja2 `
             google-api-python-client google-auth-oauthlib `
-            anthropic python-dotenv
+            python-dotenv
 pip freeze > server\requirements.txt
 ```
 
-(`jinja2` is added for admin panel HTML templates.)
+Note: `anthropic` package is not installed in this version.
 
 ### 8.2 API Endpoints
 
@@ -896,7 +846,7 @@ pip freeze > server\requirements.txt
 | `/status` | GET | JSON: last render time, source statuses, next fetches, ETag. |
 | `/refresh` | POST | Force immediate re-render and data re-fetch. |
 
-**Admin API (used by admin panel — see §9):**
+**Admin API (used by admin panel):**
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -904,25 +854,21 @@ pip freeze > server\requirements.txt
 | `/api/quotes` | POST | Add a new quote `{quote, attribution}` |
 | `/api/quotes/{id}` | PUT | Update a quote entry |
 | `/api/quotes/{id}` | DELETE | Remove a quote entry |
-| `/api/quote-prompt` | GET | Return current Claude quote prompt string |
-| `/api/quote-prompt` | PUT | Update Claude quote prompt string |
-| `/api/tickers` | GET | Return watchlist tickers as JSON array |
+| `/api/quotes/upload` | POST | Upload a full `quotes.json` file to replace the current list |
+| `/api/tickers` | GET | Return watchlist tickers |
 | `/api/tickers` | POST | Add a ticker `{ticker}` |
 | `/api/tickers/{ticker}` | DELETE | Remove a ticker |
 | `/api/portfolio` | GET | Return full portfolio holdings |
 | `/api/portfolio` | POST | Add a holding `{ticker, shares, avg_cost, notes}` |
 | `/api/portfolio/{ticker}` | PUT | Update a holding |
 | `/api/portfolio/{ticker}` | DELETE | Remove a holding |
-| `/api/suggestion-prompt` | GET | Return current Claude suggestion prompt |
-| `/api/suggestion-prompt` | PUT | Update suggestion prompt |
-| `/api/portfolio/query` | POST | Ask Claude a question about the portfolio (see §9.3) |
 
 **Admin UI pages:**
 
 | Route | Description |
 |---|---|
-| `/admin` | Admin panel home / dashboard summary |
-| `/admin/quotes` | Quote list manager |
+| `/admin` | Admin panel home |
+| `/admin/quotes` | Quote library manager |
 | `/admin/stocks` | Watchlist + portfolio manager |
 
 ### 8.3 Render Pipeline
@@ -934,18 +880,16 @@ scheduler triggers render()
   │     calendar.get_birthdays_today()
   │     weather.get_today()            [cached post-05:45]
   │     stocks.get_prices(tickers)     [cached post-scheduled fetch]
-  │     quote.get_today()              [cached post-05:45]
-  │     suggestions.maybe_get()        [only on trigger]
   │
+  ├─► quote.get_today()               [date-seeded from quotes.json]
   ├─► Load portfolio.json → compute P&L summary
   │
   ├─► renderer.compose(data) → PIL Image (800×480, mode "1")
   │     draw_quote_strip()       [y=0..70]
-  │     draw_weather_zone()      [x=0..220, y=70..320]
-  │     draw_clock_zone()        [x=220..800, y=70..250 or 70..320]
-  │     draw_birthday_zone()     [x=220..800, y=250..320, if any]
-  │     draw_stocks_zone()       [y=320..410]
-  │     draw_footer()            [y=410..480]
+  │     draw_weather_zone()      [x=0..220, y=70..380]
+  │     draw_clock_zone()        [x=220..800, y=70..290 or 70..380]
+  │     draw_birthday_zone()     [x=220..800, y=290..380, if any]
+  │     draw_stocks_zone()       [y=380..480]
   │     draw_dividers()
   │
   ├─► MD5 hash → ETag
@@ -960,9 +904,8 @@ scheduler triggers render()
 | Full render | Every 60s (active windows) / every 30 min (inactive) | ETag prevents unnecessary display refresh |
 | Weather fetch | Daily at 05:45 | Min/max included, cached all day |
 | Stock fetch | Daily at 05:45 and 17:30 | Includes portfolio P&L calculation |
-| Calendar fetch | Daily at 05:45 and 18:00 | |
-| Quote generation | Daily at 05:45 | Cached all day |
-| AI suggestions | On trigger (price change > 1.5%) | 30 min cooldown per ticker |
+| Calendar fetch | Daily at 05:45 and 18:00 | Re-fetched for evening window |
+| Quote selection | Daily at 05:45 | Date-seeded random pick from quotes.json |
 
 ### 8.5 `server\CLAUDE.md`
 
@@ -973,7 +916,7 @@ scheduler triggers render()
 FastAPI server on Windows 10 (DESKTOP-NJR6V52), Asus A554I.
 IP: 10.100.102.216 (DHCP-reserved, stable).
 Renders 800×480 1-bit PNG for Seeed reTerminal E1001 ePaper display.
-Also hosts a local admin panel at /admin for managing quotes, stocks, portfolio.
+Hosts admin panel at /admin for managing quotes, stocks, portfolio.
 
 ## Activate venv first
   C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\Activate.ps1
@@ -992,101 +935,72 @@ Also hosts a local admin panel at /admin for managing quotes, stocks, portfolio.
 - Fonts: always ImageFont.truetype() from server\fonts\ — never default fonts
 - HTTP: always httpx.AsyncClient — never requests library
 - Secrets: load from server\secrets\.env — never hardcode
-- Data files in server\data\ are user-editable via admin panel — never overwrite on startup
+- Data files in server\data\ are user-managed — never overwrite on startup
+- No Claude/Anthropic API is used in this version
 
 ## Layout zones (pixels)
 - Quote:     x=0,   y=0,   w=800, h=70
-- Weather:   x=0,   y=70,  w=220, h=250
-- Clock:     x=220, y=70,  w=580, h=180  (expands to h=250 if no birthdays)
-- Birthdays: x=220, y=250, w=580, h=70   (hidden if none today)
-- Stocks:    x=0,   y=320, w=800, h=90
-- Footer:    x=0,   y=410, w=800, h=70
+- Weather:   x=0,   y=70,  w=220, h=310
+- Clock:     x=220, y=70,  w=580, h=220  (expands to h=310 if no birthdays)
+- Birthdays: x=220, y=290, w=580, h=90   (hidden if none today)
+- Stocks:    x=0,   y=380, w=800, h=100
 
-## Data files (editable via admin panel — do not hardcode their content)
-- server\data\quotes.json           — fallback quote list
-- server\data\quote_prompt.txt      — Claude quote generation prompt
-- server\data\tickers.json          — stock watchlist
-- server\data\portfolio.json        — holdings with shares + avg cost
-- server\data\suggestion_prompt.txt — Claude suggestion prompt
+## Clock zone
+- Time: Montserrat Bold 120pt, centered in upper portion of clock zone
+- Date: Montserrat Regular 24pt, centered directly below time
+- Format: H:MM  and  "Wednesday, April 6"
+
+## Data files (never overwrite on startup)
+- server\data\quotes.json     — quote library (upload via /api/quotes/upload)
+- server\data\tickers.json    — stock watchlist
+- server\data\portfolio.json  — holdings with shares + avg cost
 
 ## Data sources
 - Calendar: Birthdays only, token.json auto-refreshes
-- Stocks: Polygon.io at 05:45 and 17:30; P&L computed from portfolio.json
+- Stocks: Polygon.io at 05:45 and 17:30; P&L from portfolio.json
 - Weather: Open-Meteo, lat=32.08 lon=34.78, no wind speed
-- Quote: Claude Haiku via quote_prompt.txt, 05:45 daily, fallback from quotes.json
-- Suggestions: Claude Haiku via suggestion_prompt.txt, portfolio-aware
+- Quote: date-seeded random from quotes.json, no Claude API
 ```
 
 ---
 
 ## 9. Management UI — Admin Panel
 
-The admin panel is served by the same FastAPI process on `/admin` routes. It is a simple local web UI — accessible from any browser on the home network at `http://10.100.102.216:8080/admin`. No authentication is required (local network only). It uses server-side HTML templates (Jinja2) with minimal JavaScript for form interactions.
+The admin panel is served by the same FastAPI process on `/admin` routes. Accessible from any browser on the home network at `http://10.100.102.216:8080/admin`. No authentication required (local network only). Uses Jinja2 HTML templates.
 
 ### 9.1 Quote Manager (`/admin/quotes`)
 
-Displays the current fallback quote list (`server\data\quotes.json`) and the Claude prompt template (`server\data\quote_prompt.txt`).
+Manages the quote library stored in `server\data\quotes.json`.
 
 **Features:**
-- **List view:** shows all quotes with index, text snippet, and attribution
-- **Add quote:** form with two fields — quote text + attribution — submits to `POST /api/quotes`
-- **Edit quote:** inline edit of text and attribution — submits to `PUT /api/quotes/{id}`
-- **Delete quote:** delete button per entry — calls `DELETE /api/quotes/{id}`
-- **Edit Claude prompt:** textarea showing current `quote_prompt.txt` — save button calls `PUT /api/quote-prompt`
-- **Preview:** "Generate now" button calls `POST /refresh` and shows a link to the cached PNG
+- **Upload file:** file upload button to replace the entire `quotes.json` with a new prepared file. This is the primary workflow — prepare a large file using [claude.ai](https://claude.ai), then upload it here.
+- **List view:** table showing all quotes with index, text snippet, and attribution
+- **Add quote:** form with quote text + attribution fields
+- **Edit quote:** inline edit per entry
+- **Delete quote:** delete button per entry
+- **Preview:** "Refresh display now" button triggers `POST /refresh`
+- **Stats:** shows total number of quotes in library and today's selected quote index
+
+**Recommended quote file preparation workflow:**
+1. Open [claude.ai](https://claude.ai)
+2. Ask Claude to generate 100+ quotes in the exact JSON format shown in §6.5
+3. Specify themes: literature (Dune, Alchemist), science, history, philosophy
+4. Copy the JSON output to a file named `quotes.json`
+5. Upload via this admin panel page
 
 ### 9.2 Stock & Watchlist Manager (`/admin/stocks`)
 
-Manages tracked tickers (`tickers.json`) and portfolio holdings (`portfolio.json`) and the suggestion prompt.
+Manages `tickers.json` and `portfolio.json`.
 
 **Watchlist section:**
-- Current tickers listed with delete button each
-- Add ticker: text field + "Add" button → `POST /api/tickers`
-- Delete: `DELETE /api/tickers/{ticker}`
+- Current tickers listed with delete button
+- Add ticker: text field + "Add" button
 
 **Portfolio section:**
-- Table of holdings: Ticker | Shares | Avg Cost | Notes | Current Price | P&L | P&L%
-- Current price and P&L are computed from last cached stock fetch
-- Add holding: form with Ticker, Shares, Avg Cost (USD), Notes → `POST /api/portfolio`
-- Edit holding: inline edit of shares, avg cost, notes → `PUT /api/portfolio/{ticker}`
-- Delete holding: `DELETE /api/portfolio/{ticker}`
-
-**Suggestion prompt section:**
-- Textarea showing `suggestion_prompt.txt`
-- Save button → `PUT /api/suggestion-prompt`
-
-### 9.3 Portfolio AI Query (`/admin/stocks` — Query section)
-
-A text input field labelled **"Ask about your portfolio"** that lets you type a free-form question and get a Claude response about your holdings. This is separate from the display suggestion — it's a manual, interactive query.
-
-**Example questions:**
-- "How is my portfolio performing overall this week?"
-- "Should I rebalance given TSLA's recent drop?"
-- "What's my total unrealised gain?"
-
-**Interaction flow:**
-1. User types a question in the textarea and clicks "Ask Claude"
-2. Frontend sends `POST /api/portfolio/query` with `{question: "..."}`
-3. Server builds a prompt with full portfolio data + latest prices + the user's question
-4. Claude Haiku responds (max 200 tokens)
-5. Response displayed in a result box below the form
-
-**Prompt sent to Claude:**
-```
-You are a personal finance assistant reviewing a portfolio.
-
-Holdings:
-{portfolio_detail}
-
-Today's market data:
-{market_data}
-
-User question: {user_question}
-
-Answer clearly and concisely (max 3 sentences).
-```
-
-This response is never shown on the ePaper display — it is admin-panel only.
+- Table: Ticker | Shares | Avg Cost | Notes | Current Price | Value | P&L | P&L%
+- Current price and P&L computed from last cached stock fetch
+- Add / edit / delete holdings
+- If no stock fetch has occurred yet, Current Price and P&L columns show `—`
 
 ---
 
@@ -1107,7 +1021,6 @@ STOCK_PROVIDER=polygon
 STOCK_API_KEY=<!-- your Polygon.io API key -->
 STOCK_FETCH_TIMES=05:45,17:30
 STOCK_SUGGESTION_TRIGGER_PCT=1.5
-STOCK_SUGGESTION_COOLDOWN_MIN=30
 
 # ── Weather ──────────────────────────────────────────────────
 WEATHER_LAT=32.08
@@ -1115,27 +1028,20 @@ WEATHER_LON=34.78
 WEATHER_TIMEZONE=Asia/Jerusalem
 WEATHER_UNITS=celsius
 
-# ── Claude API ───────────────────────────────────────────────
-ANTHROPIC_API_KEY=<!-- your Anthropic API key -->
-
 # ── Server ───────────────────────────────────────────────────
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8080
 ```
 
-Note: `STOCK_TICKERS` is no longer in `.env` — the watchlist is managed via `server\data\tickers.json` through the admin panel.
+No `ANTHROPIC_API_KEY` in this version.
 
 ### 10.2 User-Editable Data Files
 
-These files live in `server\data\` and are managed through the admin panel. They are safe to edit manually too. They must never be overwritten by the application on startup.
-
 | File | Content | Managed via |
 |---|---|---|
-| `quotes.json` | Fallback quote list | Admin panel → Quotes |
-| `quote_prompt.txt` | Claude quote generation prompt | Admin panel → Quotes |
-| `tickers.json` | Stock watchlist | Admin panel → Stocks |
-| `portfolio.json` | Holdings with shares + avg cost | Admin panel → Stocks |
-| `suggestion_prompt.txt` | Claude suggestion prompt | Admin panel → Stocks |
+| `data\quotes.json` | Quote library | Admin panel → Quotes (upload or individual edit) |
+| `data\tickers.json` | Stock watchlist | Admin panel → Stocks |
+| `data\portfolio.json` | Holdings with shares + avg cost | Admin panel → Stocks |
 
 ### 10.3 `.gitignore`
 
@@ -1156,18 +1062,16 @@ build/
 
 | Failure scenario | Behaviour |
 |---|---|
-| **Wi-Fi fails at boot (E1001)** | Retry 3×, 5s apart → render error screen → PM sleep 5 min → retry |
+| **Wi-Fi fails at boot (E1001)** | Retry 5×, 5s apart → render error screen → PM sleep 5 min → retry |
 | **NTP sync fails** | Use RTC, log warning. Self-corrects next boot |
 | **Server unreachable** | Keep last displayed image. Sleep and retry |
 | **Google Calendar API error** | Birthday zone hidden silently |
 | **Polygon.io error / rate limit** | Last known price with `[delayed]` label |
-| **Claude API error (suggestion)** | Suggestion line blank; portfolio P&L still shown |
-| **Claude API error (quote)** | Random entry from `quotes.json` |
 | **Weather API error** | Weather zone shows `—` |
 | **Server render exception** | Log traceback. Serve last cached PNG. Server stays up |
 | **PNG decode error (E1001)** | Skip update, log, sleep normally |
-| **portfolio.json missing or empty** | Stocks zone shows tickers only, no P&L summary line |
-| **Admin panel portfolio query error** | Display error message in query result box |
+| **quotes.json missing or empty** | Display hardcoded default quote: `"Not all those who wander are lost." — J.R.R. Tolkien` |
+| **portfolio.json missing or empty** | Stocks zone shows tickers only, line 2 blank |
 
 ---
 
@@ -1180,12 +1084,11 @@ build/
 | Python 3.12 | Runtime | [python.org](https://python.org) |
 | venv | Isolation | `python -m venv .venv` |
 | FastAPI + Uvicorn | HTTP server + admin routes | `pip install fastapi uvicorn` |
-| Jinja2 | Admin panel HTML templates | `pip install jinja2` |
+| Jinja2 | Admin panel templates | `pip install jinja2` |
 | Pillow | Image rendering | `pip install pillow` |
 | httpx | Async HTTP client | `pip install httpx` |
 | APScheduler | Task scheduling | `pip install apscheduler` |
 | google-api-python-client | Calendar SDK | `pip install google-api-python-client google-auth-oauthlib` |
-| anthropic | Claude SDK | `pip install anthropic` |
 | python-dotenv | `.env` loading | `pip install python-dotenv` |
 | NSSM | Windows Service manager | [nssm.cc](https://nssm.cc/download) |
 | Claude Code | AI-assisted development | `npm install -g @anthropic-ai/claude-code` |
@@ -1194,8 +1097,7 @@ build/
 ```powershell
 C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\Activate.ps1
 pip install fastapi uvicorn jinja2 pillow httpx apscheduler `
-            google-api-python-client google-auth-oauthlib `
-            anthropic python-dotenv
+            google-api-python-client google-auth-oauthlib python-dotenv
 ```
 
 ### 12.2 E1001 Firmware Side (Arch Linux)
@@ -1218,7 +1120,7 @@ west build -b reterminal_e1001 .
 west flash --runner esptool
 ```
 
-> Keep `PLATFORMIO_CORE_DIR=/opt/platformio` in `.bashrc` to protect the full `/home` partition.
+> Keep `PLATFORMIO_CORE_DIR=/opt/platformio` in `.bashrc`.
 
 ### 12.3 Claude Code
 
@@ -1241,13 +1143,13 @@ claude
 |---|---|---|---|
 | 1 | Tickers to track | Add via admin panel at `/admin/stocks` | <!-- TBD --> |
 | 2 | Portfolio holdings | Enter via admin panel — shares, avg cost, notes | <!-- TBD --> |
-| 3 | Stock suggestion trigger % | Currently 1.5% — adjustable in `.env` | <!-- TBD --> |
-| 4 | E1001 IP assignment | Recommend DHCP reservation in router for E1001 MAC | <!-- TBD --> |
-| 5 | Fallback quote list | Add at least 10 via `/admin/quotes` | <!-- TBD --> |
-| 6 | Green button refresh | ✅ Resolved — implemented in §7.5 | ✅ Done |
-| 7 | ZEReader UC8179 driver | Reference or fork from ZEReader repo — confirm license | <!-- TBD --> |
-| 8 | Birthday zone if empty | Clock expands to fill space — confirm visual is good after first run | <!-- TBD --> |
-| 9 | Admin panel auth | Currently none (local network only). Add basic password if desired. | <!-- TBD --> |
+| 3 | E1001 IP | DHCP-reserved at `10.100.102.4` | ✅ Done |
+| 4 | Quotes file preparation | Use claude.ai to generate 100+ quotes, upload via admin panel | <!-- TBD --> |
+| 5 | Green button refresh | ✅ Resolved — full refresh on button press | ✅ Done |
+| 6 | ZEReader UC8179 driver | Reference or fork from ZEReader repo — confirm license | <!-- TBD --> |
+| 7 | Birthday zone if empty | Clock+date expand to fill space — confirm visually after first run | <!-- TBD --> |
+| 8 | Admin panel auth | Currently none (LAN only). Add basic password if desired in future. | <!-- TBD --> |
+| 9 | Claude API / AI features | Deferred — re-enable suggestion_prompt.txt and quote AI when API key available | <!-- Future v2 --> |
 
 ---
 
@@ -1257,8 +1159,9 @@ claude
 |---|---|---|
 | 0.1 | 01.05.2026 | Initial draft |
 | 0.2 | 01.05.2026 | Quote of the day; network topology; NSSM; grid redesign; weather fields; NTP; ESP-IDF firmware; Wi-Fi error screen; stock schedule |
-| 0.3 | 01.05.2026 | Venv path; full Windows paths; Ethernet static IP setup; layout redesign (quote top, clock+birthdays, stocks, footer); quote sources expanded to literature; firmware to Zephyr; green button resolved |
-| 0.4 | 01.05.2026 | DHCP reservation noted — static IP instructions removed (not needed); laptop IP `10.100.102.216`, gateway `10.100.102.1`, hostname `DESKTOP-NJR6V52` filled in; SERVER_HOST filled in config.h; quote strip height increased to 70px; clock zone enlarged (h=180, font 110pt); birthday zone reduced to 70px; footer increased to 70px; weather wind speed removed from display and API fetch; stocks zone enlarged to 90px with two-line format (tickers + portfolio+AI); portfolio database `portfolio.json` added with P&L calculation; stock watchlist moved from `.env` to `tickers.json` (admin-managed); Claude suggestion prompt made user-editable via `suggestion_prompt.txt`; Claude quote prompt made user-editable via `quote_prompt.txt`; new §9 Management UI / Admin Panel with Quote Manager, Watchlist+Portfolio Manager, and interactive portfolio AI query; new API routes `/api/*` and `/admin/*`; `jinja2` added to dependencies; `STOCK_TICKERS` removed from `.env`; `server\data\` directory added to directory structure |
+| 0.3 | 01.05.2026 | Venv path; full Windows paths; Ethernet static IP setup; layout redesign; quote sources expanded to literature; firmware to Zephyr; green button resolved |
+| 0.4 | 01.05.2026 | DHCP reservation confirmed; laptop IP/hostname/gateway filled in; quote strip h=70; clock enlarged (110pt); birthday zone reduced; footer added (70px); wind speed removed; stocks zone 90px; portfolio.json added; tickers.json admin-managed; Claude prompt files added; admin panel §9 with portfolio AI query; jinja2 added |
+| 0.5 | 01.05.2026 | Claude API removed (no key available) — quotes now use local `quotes.json` with date-seeded random selection; stock AI suggestions replaced with static P&L summary placeholder; `quote_prompt.txt` and `suggestion_prompt.txt` removed; `anthropic` package removed from dependencies; footer zone removed — canvas is now Quote/Weather/Clock+Date+Birthdays/Stocks only; clock zone enlarged (h=220); weather zone enlarged (h=310); stocks zone enlarged (h=100); date moved into clock zone below the time; clock font changed from Inter to **Montserrat** (Bold 120pt for time, Regular 24pt for date); date format changed to `Wednesday, April 6` (no year); partial refresh region updated (clock+date only, no footer); §7.1 comparison table removed — Zephyr choice stated concisely; `WIFI_RETRY_MAX` changed from 3 to **5**; Wi-Fi error screen updated to reflect 5 retries; admin panel §9.1 updated to file-upload workflow with claude.ai preparation instructions; `/api/quotes/upload` endpoint added; fallback quote added to error handling table; `portfolio/query` Claude endpoint removed from admin panel and API table |
 
 ---
 
