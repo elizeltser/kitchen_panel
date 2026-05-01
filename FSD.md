@@ -154,7 +154,7 @@ netstat -an | findstr "8080"
 | Router gateway | `10.100.102.1` |
 | Server port | `8080` |
 | Admin panel port | `8080` (same server, different routes — see §9) |
-| E1001 IP assignment | <!-- Recommend DHCP reservation in router for E1001 MAC address --> |
+| E1001 IP assignment | `10.100.102.4` (DHCP-reserved in router - no additional config needed) | 
 | External exposure | None — no port forwarding, default router firewall |
 
 ---
@@ -579,7 +579,7 @@ Wind speed is not fetched or displayed.
 
 ### 6.5 Quote of the Day
 
-**Purpose:** A beautiful or thought-provoking quote at the top of the display, from real people, history, or literature (Dune, The Alchemist, etc.).
+**Purpose:** A beautiful or thought-provoking quote at the top of the display, from real people, history, or literature.
 
 **Generation:** Claude API call once at 05:45, cached all day.
 
