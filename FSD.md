@@ -1,5 +1,5 @@
 # Functional Specification: ePaper Smart Dashboard System
-**Document version:** 0.2 — Draft  
+**Document version:** 0.3 — Draft  
 **Last updated:** 1.5.2026  
 **Author:** Eli Zeltser  
 **Status:** In Progress
@@ -29,6 +29,7 @@
 10. [Error Handling & Fallback Behavior](#10-error-handling--fallback-behavior)
 11. [Development Toolchain](#11-development-toolchain)
 12. [Open Questions & Decisions Pending](#12-open-questions--decisions-pending)
+13. [Appendix A — Change Log](#appendix-a--change-log)
 
 ---
 
@@ -36,7 +37,7 @@
 
 ### 1.1 Purpose
 
-This document describes the functional requirements of a personal smart dashboard built on a **Seeed Studio reTerminal E1001** 7.5-inch monochrome ePaper display. The system provides an at-a-glance view of time, weather, calendar events, stock portfolio status, and a daily inspirational quote during defined morning and evening periods. An AI layer provides lightweight buy/hold/sell suggestions for tracked stocks and generates the daily quote.
+This document describes the functional requirements of a personal smart dashboard built on a **Seeed Studio reTerminal E1001** 7.5-inch monochrome ePaper display. The system provides an at-a-glance view of time, weather, birthday reminders, stock portfolio status, and a daily quote during defined morning and evening periods. An AI layer provides lightweight buy/hold/sell suggestions for tracked stocks and generates the daily quote.
 
 ### 1.2 Goals
 
@@ -49,7 +50,7 @@ This document describes the functional requirements of a personal smart dashboar
 ### 1.3 Non-Goals
 
 - This is not a real-time trading terminal. Stock suggestions are informational only.
-- The display is not interactive (no touch, no button-driven navigation in v1).
+- The display is not interactive beyond the green button manual refresh (v1).
 - The system does not need to function when the laptop server is off or unreachable.
 
 ### 1.4 Intended Users
@@ -67,7 +68,8 @@ The system follows a **server-rendered pull model**:
 ```
 ┌────────────────────────────────────┐
 │    Asus A554I Laptop (Server)      │
-│         Windows 10                 │
+│    Windows 10 — Ethernet connected │
+│                                    │
 │  ┌──────────┐   ┌───────────────┐  │
 │  │ Data     │   │ Image         │  │
 │  │ Fetcher  │──►│ Renderer      │  │
@@ -78,17 +80,19 @@ The system follows a **server-rendered pull model**:
 │   Open-Meteo     server :8080      │
 │   Claude API            │          │
 └────────────────────────-│──────────┘
-                          │  Wi-Fi (home network, 2.4GHz)
+                          │  Home network (router)
+                          │  Laptop: Ethernet (static IP)
+                          │  E1001:  Wi-Fi 2.4GHz
                           │  HTTP GET /display.png
                           ▼
               ┌───────────────────────┐
               │   reTerminal E1001    │
-              │  ESP-IDF firmware     │
+              │   Zephyr RTOS firmware│
               │                       │
               │  Poll → ETag check    │
               │  Decode PNG           │
               │  Refresh ePaper       │
-              │  Deep sleep           │
+              │  System off (PM)      │
               └───────────────────────┘
 ```
 
@@ -105,60 +109,83 @@ Every render cycle (laptop side):
   5. Serve via HTTP
 
 Every poll cycle (E1001 side):
-  1. Wake from deep sleep (timer-based)
+  1. Wake from system-off / power-managed sleep
   2. Connect to Wi-Fi
   3. GET /display.png with If-None-Match: <last_etag>
   4. If 304 Not Modified → skip display update, go back to sleep
   5. If 200 OK → decode PNG, choose refresh mode, update display
-  6. Store new ETag in NVS flash
+  6. Store new ETag in retained RAM or settings subsystem
   7. Compute sleep duration until next poll
-  8. Enter deep sleep
+  8. Enter power-managed sleep
 ```
 
 ### 2.3 Network Topology
 
-This system runs entirely within your home Wi-Fi network. The E1001 and the laptop must be on the same local network. The server is **not exposed to the internet** — it only listens on your local network.
+The laptop connects to the home router via **Ethernet** (Wi-Fi adapter is non-functional) with a **static IP**. The E1001 connects via **2.4GHz Wi-Fi** (ESP32-S3 does not support 5GHz). Both are on the same home LAN subnet. The server is **not exposed to the internet**.
 
-**To fill in this section, run the following on your Windows laptop:**
+#### Setting a Static IP on Windows 10 (Ethernet)
+
+A static IP ensures the E1001 always knows where to find the server, even after reboots.
 
 ```powershell
-# 1. Find your laptop's local IP address (look for Wi-Fi adapter)
+# Step 1: Find the name of your Ethernet adapter
 ipconfig
 
-# 2. Find your laptop's hostname (simpler alternative to using raw IP)
-hostname
-
-# 3. Verify both devices are on the same subnet — the first three
-#    numbers of their IP addresses should match (e.g. 192.168.1.x)
-#    The E1001's IP will appear in your router's admin page after
-#    it connects, or in its serial monitor output on first boot.
+# Look for "Ethernet adapter Ethernet" or similar.
+# Note the current IPv4 address (e.g. 192.168.1.XX) and Default Gateway.
+# Your static IP should be in the same range but outside the router's DHCP pool
+# (e.g. if DHCP gives out .100–.200, choose .50).
 ```
 
-**How to check your router admin page for the E1001's IP:**
-Open a browser and go to `http://192.168.1.1` (or `http://192.168.0.1`) — this is usually your router. Log in and look for a "Connected devices" or "DHCP clients" list. Once the E1001 has booted and connected to Wi-Fi, it will appear there with a name like `espressif` or `reterminal`.
+**Via Windows Settings (GUI — recommended):**
+1. Open **Settings → Network & Internet → Ethernet → Change adapter options**
+2. Right-click your Ethernet adapter → **Properties**
+3. Select **Internet Protocol Version 4 (TCP/IPv4)** → **Properties**
+4. Select **Use the following IP address** and fill in:
+   - IP address: `<!-- e.g. 192.168.1.50 -->` ← choose a free address in your subnet
+   - Subnet mask: `255.255.255.0`
+   - Default gateway: `<!-- your router's IP, e.g. 192.168.1.1 -->`
+   - Preferred DNS: `8.8.8.8`
+   - Alternate DNS: `8.8.4.4`
+5. Click OK → Close
 
-**How to verify the server is NOT exposed externally:**
+**Verify it worked:**
 ```powershell
-# On Windows, check what's listening and on which interface.
-# Look for port 8080 — it should show 0.0.0.0:8080 (local only)
-# NOT your public IP address.
+ipconfig
+# Should now show your chosen static IP under Ethernet adapter
+ping 8.8.8.8
+# Should succeed — confirms internet still works
+```
+
+**How to find your router's IP (gateway):**
+```powershell
+ipconfig | findstr "Default Gateway"
+```
+
+**How to check the server is NOT exposed externally:**
+```powershell
+# After starting the server, check what's listening on port 8080.
+# It should bind to 0.0.0.0:8080 — this means all local interfaces,
+# but only reachable within your LAN, NOT from the internet,
+# as long as your router has no port-forwarding rule for 8080.
 netstat -an | findstr "8080"
 
-# To find your public IP (for comparison — the server must NOT be on this):
-# Visit https://whatismyip.com in a browser
-# Your laptop's local IP (from ipconfig) will be different — that's correct.
+# Your public IP (do NOT see this in the netstat output above):
+# Visit https://whatismyip.com — it will be different from your LAN IP.
 ```
 
-As long as your router does not have a port-forwarding rule pointing external traffic to port 8080, your server is safely local-only. You do not need to add any rules — the default is closed.
+Your router's firewall blocks inbound connections by default. As long as you have not added a port-forwarding rule for port 8080, the server is safely internal.
 
 | Item | Value |
 |---|---|
-| Network type | Home Wi-Fi, **2.4GHz only** (ESP32-S3 does not support 5GHz) |
-| Laptop local IP | <!-- Run `ipconfig` on your Windows laptop and fill in the IPv4 address shown under "Wireless LAN adapter Wi-Fi", e.g. 192.168.1.50 --> |
-| Laptop hostname | <!-- Run `hostname` on your Windows laptop, e.g. ASUS-HOME --> |
+| Network type | Home LAN — Laptop via Ethernet, E1001 via 2.4GHz Wi-Fi |
+| Laptop connection | Ethernet (Wi-Fi non-functional) |
+| Laptop static IP | <!-- Fill in after running ipconfig — e.g. 192.168.1.50 --> |
+| Laptop hostname | <!-- Run `hostname` in PowerShell — e.g. ASUS-HOME --> |
 | Server port | `8080` |
-| E1001 IP assignment | <!-- Recommended: set a DHCP reservation in your router so E1001 always gets the same IP. Alternatively fill in after first boot. --> |
-| External exposure | None — server binds to local interface only, no port forwarding |
+| Router gateway | <!-- e.g. 192.168.1.1 — run `ipconfig \| findstr "Default Gateway"` --> |
+| E1001 IP assignment | <!-- Recommend DHCP reservation in router for E1001's MAC address --> |
+| External exposure | None — no port forwarding, default router firewall applies |
 
 ---
 
@@ -176,51 +203,63 @@ As long as your router does not have a port-forwarding rule pointing external tr
 | Battery | 2000 mAh (not primary concern for this project) |
 | Onboard sensors | SHT40 temperature & humidity, RTC |
 | Pinout (ePaper SPI) | CLK=GPIO7, MOSI=GPIO9, CS=GPIO10, DC=GPIO8, RST=GPIO47, BUSY=GPIO48 |
-| Buttons | Left=GPIO4, Right=GPIO5, Green/Reset=GPIO3 |
+| Buttons | Left=GPIO4, Right=GPIO5, Green=GPIO3 |
 | LED | GPIO6 (active LOW) |
 | Buzzer | GPIO45 |
-| Firmware framework | ESP-IDF (native Espressif framework) |
+| Firmware framework | Zephyr RTOS |
 
 **Refresh modes available:**
 
 | Mode | Duration | Flicker | Use case |
 |---|---|---|---|
-| Full refresh | ~3s | Multiple flashes | Window start, daily maintenance |
-| Fast refresh | ~1.5s | Single flash | Content change (calendar, stocks) |
+| Full refresh | ~3s | Multiple flashes | Window start, daily maintenance, button press |
+| Fast refresh | ~1.5s | Single flash | Content change (stocks, calendar) |
 | Partial refresh | ~0.3s | None | Clock tick (time region only) |
 
 ### 3.2 Server — Laptop Backend
 
-**FastAPI + Uvicorn**
-FastAPI will be used for:
-- Handlin sync data fetching natively — all external API calls (Google Calendar, Polygon, Open-Meteo, Claude) run concurrently without blocking each other.
-- Handle proper HTTP headers like `ETag` and `304 Not Modified`, which will be used by E1001 firmware to decide to refresh the screen.
-- Uvicorn is the ASGI server that runs the FastAPI service.
+**FastAPI + Uvicorn** is used because:
+- Native async support lets all external API calls (Google Calendar, Polygon, Open-Meteo, Claude) run concurrently — fast render cycles.
+- Built-in support for ETag / `304 Not Modified` HTTP headers, central to this project's efficiency.
+- Lightweight — no database, no ORM overhead.
+- Runs cleanly inside a Python virtual environment.
 
 **Process management on Windows 10:**
-On Windows 10, the recommended approach is to run the FastAPI server as a **Windows Service** using the `NSSM` (Non-Sucking Service Manager) tool. This ensures the server starts automatically when Windows boots, restarts on crash, and runs in the background without a terminal window.
+The server runs as a **Windows Service** via NSSM (Non-Sucking Service Manager), ensuring it starts on boot and restarts on crash. During development, run manually from the activated virtual environment.
 
-Setup steps (after the server is working manually):
+**Virtual environment location:** `C:\Users\Eli Zeltser\Documents\reTerminal\.venv`
+
+All Python commands below assume this venv is activated:
 ```powershell
-# 1. Download NSSM from https://nssm.cc/download
-# 2. Open PowerShell as Administrator
-# 3. Register the service:
-nssm install EpaperDashboard "C:\Python312\python.exe" "-m uvicorn main:app --host 0.0.0.0 --port 8080"
-nssm set EpaperDashboard AppDirectory "C:\path\to\your\server"
+# Activate venv (run this first in any new terminal session)
+C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\Activate.ps1
+
+# If execution policy blocks this, run once as Administrator:
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+**NSSM service setup** (run once after development is complete):
+```powershell
+# Download NSSM from https://nssm.cc/download, place nssm.exe somewhere accessible.
+# Open PowerShell as Administrator:
+
+$venvPython = "C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\python.exe"
+$appDir     = "C:\Users\Eli Zeltser\Documents\reTerminal\server"
+
+nssm install EpaperDashboard $venvPython "-m uvicorn main:app --host 0.0.0.0 --port 8080"
+nssm set EpaperDashboard AppDirectory $appDir
 nssm set EpaperDashboard Start SERVICE_AUTO_START
 nssm start EpaperDashboard
 
-# To check status:
+# Check status / stop / remove:
 nssm status EpaperDashboard
-
-# To stop or remove:
-nssm stop EpaperDashboard
+nssm stop   EpaperDashboard
 nssm remove EpaperDashboard confirm
 ```
 
-Alternatively, during development, simply run in a terminal:
+**Development run** (from activated venv):
 ```powershell
-cd C:\path\to\server
+cd "C:\Users\Eli Zeltser\Documents\reTerminal\server"
 python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
@@ -229,28 +268,31 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 | Hardware | Asus A554I |
 | OS | Windows 10 |
 | Python version | 3.12 |
-| Always-on | Yes |
+| Always-on | Yes (plugged in, screen can sleep) |
+| Project root | `C:\Users\Eli Zeltser\Documents\reTerminal\` |
+| Virtual environment | `C:\Users\Eli Zeltser\Documents\reTerminal\.venv` |
+| Server directory | `C:\Users\Eli Zeltser\Documents\reTerminal\server\` |
 | Server framework | FastAPI + Uvicorn |
 | Image rendering | Pillow (PIL) |
-| Process management | NSSM Windows Service (production) / terminal run (development) |
+| Process management | NSSM Windows Service (production) / manual venv run (development) |
 
 ### 3.3 Data Sources
 
 | Source | Provider | Auth method | Update frequency |
 |---|---|---|---|
-| Calendar | Google Calendar API v3 | OAuth2 (offline token) | Once daily at 05:45, re-fetched at 18:00 |
+| Calendar (birthdays) | Google Calendar API v3 | OAuth2 (offline token) | Once daily at 05:45, re-fetched at 18:00 |
 | Stock prices | Polygon.io | API key | 05:45 and 17:30 daily (see §6.2) |
 | Stock suggestions | Claude API (Haiku) | API key | On price change > threshold |
 | Weather | Open-Meteo (free, no key) | None | Once daily at 05:45 |
 | Quote of the day | Claude API (Haiku) | API key | Once daily at 05:45 |
-| Time / Date | System clock (laptop) | N/A | Every render cycle |
+| Time / Date | System clock on E1001 (NTP-synced) | N/A | Every render cycle |
 
 ### 3.4 Communication Layer
 
-- **Protocol:** HTTP/1.1 over local Wi-Fi (home network only)
+- **Protocol:** HTTP/1.1 over home LAN
 - **Image format:** PNG, 1-bit (black/white), 800×480
 - **Cache control:** ETag-based — E1001 sends `If-None-Match` header; server returns `304` if unchanged
-- **Security:** Local network only. No TLS required for v1. Server is not exposed externally.
+- **Security:** Local network only. No TLS in v1. Server not exposed externally.
 
 ---
 
@@ -258,95 +300,100 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 
 ### 4.1 Grid Structure
 
-The 800×480 canvas is divided into five zones. The clock is centered, weather is left, calendar is right, stocks occupy the bottom bar, and the quote sits at the very bottom edge.
+The 800×480 canvas is divided into four zones. The quote occupies the top strip with no label. Below it, weather sits left, clock and birthday reminders are stacked center, and the stocks bar anchors the bottom.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐  y=0
-│                        DATE BAR                                 │  h=50
-│              Wednesday, 29 April 2026  (centered)               │
-├────────────────────┬───────────────┬────────────────────────────┤  y=50
-│                    │               │                            │
-│   WEATHER          │    CLOCK      │   CALENDAR                 │  h=270
-│   (left panel)     │   (center)    │   (right panel)            │
-│                    │               │                            │
-│  ⛅ Partly Cloudy  │   07:42       │  09:00  Standup            │
-│  ↑24°  ↓14°        │               │  12:30  Lunch w/ Ana       │
-│  Rain 40%          │               │  15:00  Dentist            │
-│                    │               │  18:30  Birthday: Mum      │
-│                    │               │                            │
-├────────────────────┴───────────────┴────────────────────────────┤  y=320
-│                       STOCKS BAR                                │  h=80
-│  AAPL $189  ▲1.2%   TSLA $172  ▼0.8%   SPY $524  ▲0.4%          │
-│  [AI: Hold AAPL — momentum positive but nearing resistance]     │
-├─────────────────────────────────────────────────────────────────┤  y=400
-│                       QUOTE OF THE DAY                          │  h=80
-│   "The only way to do great work is to love what you do."       │
-│                                             — Steve Jobs        │
-└─────────────────────────────────────────────────────────────────┘  y=480
+┌──────────────────────────────────────────────────────────────────┐ y=0
+│  "The mystery of life isn't a problem to solve..."               │ h=50
+│                                         — Frank Herbert, Dune    │
+├───────────────────┬──────────────────────────────────────────────┤ y=50
+│                   │                                              │
+│  ⛅               │              07:42                           │
+│  Partly Cloudy    │                                              │ h=270
+│                   │──────────────────────────────────────────────│
+│  ↑24°  ↓14°       │  🎂 Mum         🎂 Dan                       │
+│  Rain 40%         │                                              │
+│  Wind 18 km/h     │                                              │
+│                   │                                              │
+├───────────────────┴──────────────────────────────────────────────┤ y=320
+│  AAPL $189  ▲1.2%   TSLA $172  ▼0.8%   SPY $524  ▲0.4%          │ h=80
+│  Hold AAPL — momentum positive but watch resistance at $192      │
+├──────────────────────────────────────────────────────────────────┤ y=400
+│  Wednesday, 29 April 2026                              18:04     │
+└──────────────────────────────────────────────────────────────────┘ y=480
 ```
+
+**Notes on the layout:**
+- No zone labels are shown on screen (no "WEATHER", "CLOCK" headings).
+- The quote strip at top has no title — text begins immediately.
+- Clock and birthday reminders share the right panel, stacked vertically: clock fills the upper portion, birthdays (if any) appear below a thin separator line.
+- If there are no birthdays today, the right panel shows only the clock, vertically centered.
+- The date and time at the very bottom serve as a persistent footer — date left-aligned, current time right-aligned in a smaller size.
 
 **Zone definitions:**
 
 | Zone | x | y | w | h | Content |
 |---|---|---|---|---|---|
-| Date bar | 0 | 0 | 800 | 50 | Full date, centered |
-| Weather | 0 | 50 | 240 | 270 | Icon + conditions + min/max + rain% + wind |
-| Clock | 240 | 50 | 320 | 270 | Large time (HH:MM), centered vertically |
-| Calendar | 560 | 50 | 240 | 270 | Up to 4 upcoming events |
-| Stocks | 0 | 320 | 800 | 80 | Tickers + AI suggestion |
-| Quote | 0 | 400 | 800 | 80 | Quote text + attribution |
+| Quote | 0 | 0 | 800 | 50 | Quote text (left) + attribution (right-aligned) |
+| Weather | 0 | 50 | 240 | 270 | Icon + description + ↑max ↓min + rain% + wind |
+| Clock | 240 | 50 | 560 | 160 | Large time `H:MM`, vertically centered |
+| Birthdays | 240 | 210 | 560 | 110 | 🎂 Birthday names, one per entry, small font |
+| Stocks | 0 | 320 | 800 | 80 | Tickers + AI suggestion line |
+| Footer | 0 | 400 | 800 | 80 | Date (left) + current time (right), smaller font |
 
-**Dividers:** Single-pixel black horizontal lines at y=50, y=320, y=400. Single-pixel vertical lines at x=240 and x=560 (between weather/clock and clock/calendar, from y=50 to y=320).
+**Dividers:**
+- Horizontal line at y=50 (full width)
+- Horizontal line at y=210 (x=240 to x=800 only — separates clock from birthdays)
+- Horizontal line at y=320 (full width)
+- Horizontal line at y=400 (full width)
+- Vertical line at x=240, from y=50 to y=320
 
-### 4.2 Typography
+### 4.2 Partial Refresh Region
 
-All fonts are loaded server-side from TTF files. No font constraints from the ESP32 apply — any TTF/OTF available on the laptop can be used.
+On each minute-tick, only the clock sub-region and the footer time are redrawn. This avoids touching the weather, quote, or stocks zones unnecessarily.
+
+| Region | x | y | w | h |
+|---|---|---|---|---|
+| Clock | 240 | 50 | 560 | 160 |
+| Footer time | 600 | 405 | 195 | 40 |
+
+### 4.3 Typography
+
+All fonts are loaded server-side as TTF files. No constraints from the ESP32 apply.
 
 | Element | Font | Size | Style | Notes |
 |---|---|---|---|---|
-| Clock (HH:MM) | Inter | 88pt | Bold | Tabular figures (`tnum` feature) to prevent layout shift |
-| Date bar | Inter | 26pt | Medium | Centered horizontally |
-| Weather — icon | Nerd Font (NerdFontsSymbolsOnly) | 48pt | Regular | Single glyph mapped from WMO weather code |
-| Weather — description | Inter | 18pt | Regular | e.g. "Partly Cloudy" |
-| Weather — temperatures | Inter | 20pt | Bold | `↑24° ↓14°` format |
-| Weather — rain / wind | Inter | 17pt | Regular | `Rain 40%  Wind 18 km/h` |
-| Calendar — time | JetBrains Mono | 18pt | Regular | Fixed-width keeps alignment |
-| Calendar — event title | Inter | 18pt | Medium | Truncated at 22 characters |
+| Clock (H:MM) | Inter | 96pt | Bold | Tabular figures (`tnum`) — digits don't shift width |
+| Weather icon | NerdFontsSymbolsOnly | 52pt | Regular | Single glyph from WMO code map |
+| Weather description | Inter | 17pt | Regular | e.g. "Partly Cloudy" |
+| Weather temp (max/min) | Inter | 20pt | Bold | `↑24°  ↓14°` on one line |
+| Weather rain / wind | Inter | 16pt | Regular | `Rain 40%   Wind 18 km/h` |
+| Birthday entries | Inter | 20pt | Medium | `🎂 Name` — up to 3 per line, wraps if needed |
 | Stock ticker | JetBrains Mono | 18pt | Bold | |
-| Stock price/change | JetBrains Mono | 17pt | Regular | `▲` / `▼` prefix |
-| AI suggestion | Inter | 15pt | Italic | Single line, truncated |
-| Quote text | Playfair Display | 17pt | Italic | Adds elegance, suits quoted speech |
-| Quote attribution | Inter | 14pt | Regular | Right-aligned, e.g. `— Steve Jobs` |
+| Stock price / change | JetBrains Mono | 17pt | Regular | `▲` / `▼` prefix |
+| AI suggestion | Inter | 14pt | Italic | Single line, truncated to fit |
+| Quote text | Playfair Display | 16pt | Italic | Left portion of quote strip |
+| Quote attribution | Inter | 13pt | Regular | Right-aligned, `— Name, Source` |
+| Footer date | Inter | 16pt | Regular | Left-aligned |
+| Footer time | Inter | 16pt | Regular | Right-aligned |
 
-**Font files to download** (all free from Google Fonts or Nerd Fonts):
-- `Inter-Bold.ttf`, `Inter-Medium.ttf`, `Inter-Regular.ttf` → [fonts.google.com](https://fonts.google.com/specimen/Inter)
-- `JetBrainsMono-Regular.ttf`, `JetBrainsMono-Bold.ttf` → [fonts.google.com](https://fonts.google.com/specimen/JetBrains+Mono)
-- `PlayfairDisplay-Italic.ttf` → [fonts.google.com](https://fonts.google.com/specimen/Playfair+Display)
-- `NerdFontsSymbolsOnly.ttf` → [github.com/ryanoasis/nerd-fonts/releases](https://github.com/ryanoasis/nerd-fonts/releases) — download `NerdFontsSymbolsOnly.zip`
+**Font files to download** (all free):
+- Inter: [fonts.google.com/specimen/Inter](https://fonts.google.com/specimen/Inter) — download `Inter-Bold.ttf`, `Inter-Medium.ttf`, `Inter-Regular.ttf`
+- JetBrains Mono: [fonts.google.com/specimen/JetBrains+Mono](https://fonts.google.com/specimen/JetBrains+Mono) — download `JetBrainsMono-Bold.ttf`, `JetBrainsMono-Regular.ttf`
+- Playfair Display: [fonts.google.com/specimen/Playfair+Display](https://fonts.google.com/specimen/Playfair+Display) — download `PlayfairDisplay-Italic.ttf`
+- Nerd Fonts: [github.com/ryanoasis/nerd-fonts/releases](https://github.com/ryanoasis/nerd-fonts/releases) — download `NerdFontsSymbolsOnly.zip`, extract `NerdFontsSymbolsOnly-Regular.ttf`
 
-Place all font files in `server/fonts/`.
+Place all files in `C:\Users\Eli Zeltser\Documents\reTerminal\server\fonts\`.
 
-### 4.3 Visual Style Rules
+### 4.4 Visual Style Rules
 
-- Background: white (`#FFFFFF` → pixel value `1`)
-- Foreground: black (`#000000` → pixel value `0`)
-- Zone separators: single-pixel black lines
-- No anti-aliasing (1-bit output — Pillow renders with Floyd-Steinberg dithering for text)
-- Stock negative values: displayed with `▼` prefix
-- Stock positive values: displayed with `▲` prefix
-- Weather icons: rendered via Nerd Fonts glyph mapped from WMO weather code (see §6.3)
-- Past calendar events: rendered with a horizontal strike-through line drawn over the text
-
-### 4.4 Partial Refresh Region
-
-The clock partial-refresh region covers only the center clock zone. Only this bounding box is redrawn on minute-tick updates. All other zones are updated only on content change or scheduled full refresh.
-
-| Property | Value |
-|---|---|
-| x | 240 |
-| y | 50 |
-| width | 320 |
-| height | 270 |
+- Background: white (pixel `1`)
+- Foreground: black (pixel `0`)
+- Zone dividers: single-pixel black lines
+- 1-bit output: Pillow renders with Floyd-Steinberg dithering for smooth text edges
+- Stock negative change: `▼` prefix
+- Stock positive change: `▲` prefix
+- Weather icons: Nerd Font glyphs mapped from WMO weather code (see §6.3)
 
 ---
 
@@ -363,48 +410,47 @@ Times are local time on the E1001 (Asia/Jerusalem), synced via NTP at each boot.
 
 ### 5.2 Maintenance Refresh
 
-To prevent image persistence (ghosting from holding a static image for extended periods), scheduled full refreshes are performed even when the screen is not actively being viewed:
-
 | Event | Time | Refresh type |
 |---|---|---|
-| End of morning window | 08:00 | Full refresh → deep sleep |
+| End of morning window | 08:00 | Full refresh → sleep |
 | Midday maintenance | 12:00 | Full refresh → immediately back to sleep |
-| End of evening window | 22:00 | Full refresh → deep sleep |
+| End of evening window | 22:00 | Full refresh → sleep |
 
-### 5.3 Refresh Decision Logic (E1001 firmware)
+### 5.3 Refresh Decision Logic
 
 ```
 On each wake:
-  IF scheduled full refresh time (08:00 / 12:00 / 22:00):
-    → full refresh → deep sleep
-  ELSE IF in active window:
-    → GET /display.png from server
-    IF 200 OK and ETag changed:
-      IF only clock region changed → partial refresh (clock zone only)
-      ELSE (data or layout changed) → fast refresh (full screen, 1 flash)
-    IF 304 Not Modified → skip display update
-  ELSE:
-    → skip fetch, deep sleep until next window
+  IF green button was pressed (wakeup reason = GPIO):
+    → force full refresh regardless of ETag
+    → fetch new image unconditionally
+    → reset to ACTIVE_WINDOW loop if within window, else sleep
 
-After every 5 consecutive partial or fast refreshes:
-  → force one full refresh to prevent ghosting accumulation
-  → reset refresh counter to 0
+  IF scheduled full refresh time (08:00 / 12:00 / 22:00):
+    → full refresh → sleep
+
+  ELSE IF in active window:
+    → GET /display.png with If-None-Match: <stored_etag>
+    IF 200 OK and ETag changed:
+      IF only clock/footer regions changed → partial refresh
+      ELSE → fast refresh (full screen, single flash)
+    IF 304 Not Modified → skip display update
+
+  ELSE:
+    → skip fetch, sleep until next window
+
+After every 5 consecutive partial/fast refreshes:
+  → force one full refresh → reset counter
 ```
 
 ### 5.4 Sleep Duration Calculation
 
-The firmware computes sleep duration dynamically based on the current time:
-
-- **During active window:** 60 seconds (1-minute clock tick)
-- **At end of active window:** sleep until next scheduled event (midday maintenance or next window start)
-- **Outside all windows:** sleep until next window start or maintenance time
+- **During active window:** 60 seconds
+- **End of active window / inactive period:** sleep until next scheduled event
 - **On Wi-Fi failure:** sleep 5 minutes, then retry
 
 ### 5.5 NTP Time Synchronisation
 
-The E1001 synchronises its clock via NTP (`il.pool.ntp.org`) at every boot from deep sleep. This ensures the local RTC does not drift over time. Deep sleep cycles are short enough (maximum ~10 hours between the end of the evening window at 22:00 and the morning wake at 05:45) that NTP sync on each boot is sufficient to keep time accurate to within a few seconds.
-
-If NTP sync fails at boot, the firmware falls back to the RTC value and logs a warning to serial. The display will continue to show time from RTC, which may drift slightly but will self-correct on the next successful sync.
+The E1001 synchronises its clock via NTP (`il.pool.ntp.org`) at every boot. This prevents RTC drift accumulating over the maximum ~10-hour overnight sleep (22:00 → 05:45). If NTP fails, the firmware falls back to the RTC and logs a warning. Time self-corrects on the next successful sync.
 
 ---
 
@@ -412,364 +458,384 @@ If NTP sync fails at boot, the firmware falls back to the RTC value and logs a w
 
 ### 6.1 Google Calendar
 
-**Purpose:** Display upcoming events for the current day in the calendar zone.
+**Purpose:** Display today's birthday reminders below the clock.
 
 **Authentication:**
 - OAuth2 with offline refresh token
-- Credentials stored in `server/secrets/token.json` (generated once via CLI flow)
-- Scopes required: `https://www.googleapis.com/auth/calendar.readonly`
+- Credentials in `server\secrets\credentials.json` (generated once via CLI flow)
+- Scopes: `https://www.googleapis.com/auth/calendar.readonly`
 
-**Query parameters:**
-- Calendar: Birthdays calendar from primary Google account
-- Time range: Now → 23:59 local time (current day only)
-- Max results: 5 events
-- Ordered by: start time ascending
+**Query:**
+- Calendar: Birthdays (from primary Google account)
+- Time range: Start of today → 23:59 local time
+- Only all-day events (birthdays have no time component)
+- Max results: 6
 
 **Display rules:**
-- Show up to 4 events on screen (5th and beyond truncated)
-- Format: `HH:MM  Event title` (truncate title at 22 characters with ellipsis)
-- All-day events (birthdays): displayed with label `🎂` prefix instead of a time
-- Past events (start time already passed): rendered with strike-through
-- If no events today: display "No events today" in the calendar zone
+- Show birthday names only — no time, no date (it's today by definition)
+- Format: `🎂 Name` — comma-separated if multiple fit on one line, or wrap to next line
+- If no birthdays today: birthday sub-zone is hidden; clock expands to fill full right panel (y=50 to y=320)
+- If Calendar API unavailable: hide birthday zone silently (no error text shown here)
 
-**Update schedule:** Fetched once at 05:45. Re-fetched at 18:00 for the evening window to catch any events added during the day.
-
-**Error handling:** If the Calendar API is unavailable, display `Calendar unavailable` in the calendar zone. Do not show stale data from previous day.
+**Update schedule:** 05:45 and 18:00.
 
 ---
 
 ### 6.2 Stock Data & AI Suggestions
 
-**Purpose:** Show current price and daily change for a personal watchlist. Provide a brief AI-generated buy/hold/sell note.
+**Purpose:** Show price and daily change for a personal watchlist. Provide a one-line AI note.
 
 **Tickers to track:**
 
-> **[ EDIT ]** List your tickers here:
+> **[ EDIT ]** List your tickers:
 > - `<!-- e.g. AAPL -->`
 > - `<!-- e.g. TSLA -->`
 > - `<!-- e.g. SPY -->`
-> - `<!-- add more -->`
 
 **Data provider:** Polygon.io
 
-**Recommended update schedule:**
-
-Stock updates are fetched at two fixed times per day rather than continuously. This approach is sensible for this dashboard because:
-- US market opens at 09:30 ET (16:30 Israel time) and closes at 16:00 ET (23:00 Israel time).
-- The morning window (05:45–08:00 Israel) falls **before** US market open — showing the previous day's close is the most meaningful snapshot available.
-- The evening window (18:00–22:00 Israel) falls **during** US market hours — showing a mid-session update is timely and actionable.
+**Update schedule rationale:**
 
 | Fetch time (Israel) | US market state | What is shown |
 |---|---|---|
-| **05:45** | Pre-market / closed | Previous day closing prices + final daily change |
-| **17:30** | Market open (~1hr in) | Current intraday price + change from previous close |
+| **05:45** | Pre-market / closed | Previous day closing prices (`[prev. close]` label) |
+| **17:30** | Market open (~1 hr in) | Live intraday price, no label |
 
-This gives you one meaningful morning context snapshot and one live afternoon update without hammering the API. Polygon.io free tier allows 5 API calls per minute, which is more than sufficient for this pattern.
-
-**Fields fetched per ticker:**
-- Current price
-- Daily change (absolute $ and %)
-- Previous close
-
-**Market status display:**
-- 05:45 fetch: append `[prev. close]` label to prices
-- 17:30 fetch: show live price, no label (understood to be intraday)
-- If market closed and no intraday data available: show `[closed]` indicator
-
-**AI suggestions (Claude API):**
+**AI suggestions:**
 
 | Property | Value |
 |---|---|
 | Model | `claude-haiku-4-5-20251001` |
 | Max tokens | 60 |
 | Trigger | Price change > 1.5% since last suggestion, or at each scheduled fetch |
-| Prompt template | `"[TICKER] is at $[PRICE], [CHANGE]% today. Give a one-sentence buy/hold/sell suggestion."` |
-| Display | Single italic line in the stocks zone, shared across all tickers |
-| Cooldown | Minimum 30 minutes between AI calls per ticker |
+| Prompt | `"[TICKER] at $[PRICE], [CHANGE]% today. One-sentence buy/hold/sell suggestion."` |
+| Display | Single italic line in stocks zone |
+| Cooldown | 30 min per ticker |
 
-> Note: Claude suggestions are informational only — not financial advice.
-
-**Rate limiting:**
-- Stock API: 2 fetches per day (05:45 and 17:30) — well within Polygon.io free tier
-- AI suggestions: maximum 1 call per ticker per 30 minutes
+> Stock suggestions are informational only — not financial advice.
 
 ---
 
 ### 6.3 Weather
 
-**Purpose:** Show today's conditions in the left weather panel.
+**Provider:** Open-Meteo — free, no API key.
 
-**Provider:** Open-Meteo (`https://api.open-meteo.com`) — free, no API key required.
-
-**Location:**
-- Latitude: `32.08`
-- Longitude: `34.78`
-- City: Bat Yam, Israel
-- Timezone: `Asia/Jerusalem`
+**Location:** Bat Yam, Israel — Lat `32.08`, Lon `34.78`, TZ `Asia/Jerusalem`
 
 **Fields fetched:**
 
-| Field | API parameter | Display format |
+| Field | API parameter | Display |
 |---|---|---|
-| Current temperature | `current=temperature_2m` | `Now: 19°C` |
-| Today's max temperature | `daily=temperature_2m_max` | `↑ 24°C` |
-| Today's min temperature | `daily=temperature_2m_min` | `↓ 14°C` |
-| Weather condition | `current=weather_code` | Icon + text (see below) |
-| Daily precipitation probability | `daily=precipitation_probability_max` | `Rain 40%` |
+| Current temperature | `current=temperature_2m` | Shown in icon area as `Now 19°` |
+| Today max temp | `daily=temperature_2m_max` | `↑ 24°C` |
+| Today min temp | `daily=temperature_2m_min` | `↓ 14°C` |
+| Weather condition | `current=weather_code` | Icon glyph + description text |
+| Precipitation probability | `daily=precipitation_probability_max` | `Rain 40%` |
 | Wind speed | `current=wind_speed_10m` | `Wind 18 km/h` |
 
-**Weather icon mapping (WMO code → Nerd Font glyph):**
+**Icon mapping (WMO code → Nerd Font glyph):**
 
-| Condition | WMO codes | Nerd Font glyph |
+| Condition | WMO codes | Glyph name |
 |---|---|---|
-| Clear / Sunny | 0 | `󰖙` (nf-md-weather_sunny) |
-| Partly Cloudy | 1, 2 | `󰖕` (nf-md-weather_partly_cloudy) |
-| Overcast | 3 | `󰖐` (nf-md-weather_cloudy) |
-| Foggy | 45, 48 | `󰖑` (nf-md-weather_fog) |
-| Drizzle | 51–57 | `󰖗` (nf-md-weather_rainy) |
-| Rain | 61–67 | `󰖖` (nf-md-weather_pouring) |
-| Thunderstorm | 95–99 | `󰖓` (nf-md-weather_lightning_rainy) |
-| Snow | 71–77, 85–86 | `󰖘` (nf-md-weather_snowy) |
+| Clear / Sunny | 0 | `nf-md-weather_sunny` |
+| Partly Cloudy | 1, 2 | `nf-md-weather_partly_cloudy` |
+| Overcast | 3 | `nf-md-weather_cloudy` |
+| Foggy | 45, 48 | `nf-md-weather_fog` |
+| Drizzle | 51–57 | `nf-md-weather_rainy` |
+| Rain | 61–67 | `nf-md-weather_pouring` |
+| Thunderstorm | 95–99 | `nf-md-weather_lightning_rainy` |
+| Snow | 71–77, 85–86 | `nf-md-weather_snowy` |
+| Windy (wind > 40 km/h) | any | `nf-md-weather_windy` |
 
-> Icons are rendered server-side using the NerdFontsSymbolsOnly TTF at 48pt. The icon is drawn in the weather zone above the text fields.
+**Update frequency:** Once at 05:45. Cached all day (daily min/max do not change).
 
-**Update frequency:** Once daily at 05:45. Weather data for the full day (including min/max) is fetched in one API call and cached. Not re-fetched for the evening window since daily min/max do not change.
-
-**Units:** Celsius.
+**Units:** Celsius, km/h.
 
 ---
 
 ### 6.4 Clock & Date
 
-**Purpose:** Display accurate current time and date. The time is the most frequently updated element via partial refresh.
-
-| Element | Format | Example | Zone |
+| Element | Format | Example | Location |
 |---|---|---|---|
-| Time | `H:MM` (24h, no leading zero) | `7:42` | Clock (center) |
-| Date bar | `Day, DD Month YYYY` | `Wednesday, 29 April 2026` | Date bar (top, centered) |
+| Time (main) | `H:MM` (24h, no leading zero) | `7:42` | Clock zone (large, center) |
+| Time (footer) | `H:MM` | `7:42` | Footer, right-aligned |
+| Date (footer) | `Day, DD Month YYYY` | `Wednesday, 29 April 2026` | Footer, left-aligned |
 
-**Time source:** System clock on the E1001, synced via NTP at each boot from deep sleep.
-
-**NTP server:** `il.pool.ntp.org` (Israeli NTP pool — geographically closest)
-
+**NTP server:** `il.pool.ntp.org`
 **Timezone:** `Asia/Jerusalem`
-**POSIX TZ string (for firmware):** `IST-2IDT,M3.4.4/26,M10.5.0`
+**POSIX TZ string:** `IST-2IDT,M3.4.4/26,M10.5.0`
 
 ---
 
 ### 6.5 Quote of the Day
 
-**Purpose:** Display an uplifting or thought-provoking quote from a well-known person in the quote zone at the bottom of the screen. The quote should feel personal, warm, and appropriate for a shared household display.
+**Purpose:** Display a short, thought-provoking or beautiful quote at the top of the screen. Quotes may come from historical figures, scientists, artists, thinkers, or from literature — including novels such as Dune, The Alchemist, or historical works.
 
-**Generation method:** Claude API call made once daily at 05:45, result cached for the full day.
+**Generation:** Claude API call once at 05:45, cached all day.
 
 | Property | Value |
 |---|---|
 | Model | `claude-haiku-4-5-20251001` |
 | Max tokens | 100 |
-| Prompt | See below |
-| Cache | Stored in memory, regenerated each morning at 05:45 |
-| Display | Quote text (italic, Playfair Display) + attribution (regular, right-aligned) |
+| Max displayed characters | 120 (regenerate once if exceeded) |
+| Cache | In-memory, regenerated each morning |
+| Fallback | Random entry from `server\quotes_fallback.json` |
 
 **Prompt template:**
 ```
-Give me one short, uplifting quote from a well-known historical figure, 
-scientist, artist, or thinker. The quote should be about life, creativity, 
-perseverance, or curiosity. Reply with ONLY the quote and attribution in 
-this exact format:
-"Quote text here." — Person Name
-Do not add any other text.
+Give me one short, memorable quote from a well-known person or from a 
+famous literary work (for example: Dune by Frank Herbert, The Alchemist 
+by Paulo Coelho, a history book, a scientist, artist, or philosopher). 
+The quote should be beautiful, thought-provoking, or uplifting.
+Reply ONLY in this exact format — no other text:
+"Quote text here." — Attribution (e.g. Name, or Name, Book Title)
 ```
 
-**Display rules:**
-- Quote text: max 120 characters. If the generated quote exceeds this, regenerate once.
-- Attribution: right-aligned below the quote, prefixed with `—`
-- If Claude API fails: display a hardcoded fallback quote from a local list of 10 pre-written quotes
+**Display:**
+- Quote text: Playfair Display Italic, left-aligned in quote strip
+- Attribution: Inter Regular, right-aligned, prefixed `—`
+- No zone title or border label
 
-**Fallback quote list** (stored in `server/quotes_fallback.json`):
-> **[ EDIT ]** Populate this file with 10 favourite quotes as a backup.
+**Fallback list** (stored in `server\quotes_fallback.json`):
+> **[ EDIT ]** Populate with 10 favourite quotes. Example entries:
+> ```json
+> [
+>   {"quote": "The mystery of life isn't a problem to solve, but a reality to experience.", "attribution": "Frank Herbert, Dune"},
+>   {"quote": "When you want something, all the universe conspires in helping you to achieve it.", "attribution": "Paulo Coelho, The Alchemist"}
+> ]
+> ```
 
 ---
 
 ## 7. Firmware Specification (E1001)
 
-### 7.1 Framework & Libraries
+### 7.1 Framework Decision: Zephyr RTOS
 
-The firmware is implemented using **ESP-IDF** (Espressif IoT Development Framework), the native framework for ESP32 chips. ESP-IDF is chosen over Arduino because it provides lower-level control over Wi-Fi power management, precise deep sleep timing, NVS storage, and the SPI bus — all of which are important for this project.
+**Zephyr is chosen over ESP-IDF for this project.** Here is the reasoning:
 
-| Item | Choice | Notes |
+| Criterion | Zephyr | ESP-IDF |
 |---|---|---|
-| Framework | ESP-IDF v5.x | Native Espressif framework |
-| ePaper driver | `epaper` component (custom or community port for UC8179) | GxEPD2 is Arduino-only; for ESP-IDF use the Espressif `esp_lcd_touch` ecosystem or a community UC8179 driver |
-| PNG decoder | `pngle` (lightweight C library) | Suitable for ESP-IDF; handles 1-bit PNG decoding in constrained RAM |
-| HTTP client | `esp_http_client` (built-in ESP-IDF component) | Supports custom headers for ETag |
-| NVS storage | `nvs_flash` + `nvs_handle` (built-in) | Stores ETag, refresh counter, last full refresh timestamp |
-| NTP | `esp_sntp` (built-in ESP-IDF component) | Configured via `sntp_setservername()` |
-| Deep sleep | `esp_sleep_enable_timer_wakeup()` + `esp_deep_sleep_start()` | Built-in ESP-IDF |
-| Wi-Fi | `esp_wifi` (built-in) | Station mode only |
-| SPI bus | `driver/spi_master.h` (built-in) | Used to drive ePaper over SPI |
+| E1001 board support | ✅ Official board definition (`reterminal_e1001`) in mainline Zephyr | ✅ Supported |
+| UC8179 ePaper driver | ✅ Already exists — used by the ZEReader open-source project for the exact same GDEY075T7 panel | ⚠️ Must be written from scratch or ported |
+| PNG decoding | ✅ `pngle` integrates cleanly | ✅ Same |
+| HTTP client | ✅ `net/http_client` Zephyr subsystem | ✅ `esp_http_client` |
+| Wi-Fi | ✅ ESP32 Wi-Fi via `esp_wifi` HAL (same underlying driver) | ✅ Native |
+| Deep sleep / PM | ✅ Zephyr Power Management subsystem (`pm_state_force`) | ✅ `esp_deep_sleep_start()` |
+| Build system | `west` (CMake-based, simpler) | `idf.py` (CMake-based) |
+| GPIO button interrupt | ✅ `gpio_pin_interrupt_configure` | ✅ GPIO ISR |
+| Learning curve | Lower for someone new — cleaner HAL abstractions | Higher — more boilerplate |
+| Hassle factor | **Lower** — UC8179 driver already exists for this exact panel | **Higher** — driver work required |
 
-**Note on ePaper driver:** GxEPD2 is an Arduino library and cannot be used directly in ESP-IDF. The recommended approach is to use the lower-level SPI commands to the UC8179 controller directly, following the controller datasheet and the waveform lookup tables from Seeed's reference firmware. Alternatively, the Zephyr Project has a board definition for the E1001 that can serve as a driver reference.
+**The UC8179 driver existence in Zephyr is the deciding factor.** The ZEReader project (an open-source e-reader built on Zephyr) uses the exact same GDEY075T7 display with the UC8179 controller and Zephyr's `display` subsystem. This existing code can be referenced or adapted directly, eliminating the highest-risk part of the firmware.
 
-### 7.2 Firmware State Machine
+### 7.2 Libraries & Components
+
+| Item | Zephyr component | Notes |
+|---|---|---|
+| RTOS | Zephyr v3.7+ | Use `reterminal_e1001` board target |
+| Build system | `west` | Zephyr's meta-tool (wraps CMake) |
+| ePaper display | `drivers/display` subsystem + UC8179 driver | Reference: ZEReader project on GitHub |
+| PNG decoder | `pngle` (vendored C library) | Tiny, RAM-friendly, works in Zephyr |
+| HTTP client | `net/http_client` Zephyr subsystem | Supports custom request headers (ETag) |
+| Wi-Fi | `esp_wifi` via Zephyr HAL | Standard for ESP32 targets |
+| NTP / SNTP | `net/sntp` Zephyr subsystem | `sntp_simple()` call |
+| Settings / storage | `settings` subsystem (NVS backend) | Stores ETag, refresh counter |
+| Power management | `pm` subsystem (`pm_state_force(PM_STATE_SOFT_OFF)`) | Controls sleep states |
+| GPIO (button) | `gpio` driver + `gpio_pin_interrupt_configure()` | Green button wakeup |
+| Real-time clock | `rtc` driver (onboard RTC) | Fallback if NTP fails |
+
+### 7.3 Firmware State Machine
 
 ```
-BOOT (from deep sleep or power-on)
+BOOT (from sleep or power-on)
   │
-  ├─► Initialize SPI, NVS, GPIO
+  ├─► Init: display, SPI, GPIO, settings/NVS
   │
-  ├─► Connect Wi-Fi (timeout: 15s)
-  │     SUCCESS → continue
-  │     FAILURE after 3 retries →
-  │       Display error message on screen: "Wi-Fi connection failed.
-  │       Check network settings. Retrying in 5 min."
-  │       → deep sleep 5 minutes → retry
+  ├─► Check wakeup reason:
+  │     GPIO (green button) → set FORCE_REFRESH flag
+  │     Timer / normal boot → continue
   │
-  ├─► Sync NTP time (il.pool.ntp.org)
-  │     FAILURE → use RTC time, log warning
+  ├─► Connect Wi-Fi (timeout 15s, retry 3×)
+  │     FAILURE:
+  │       → render Wi-Fi error screen on ePaper (see §7.4)
+  │       → sleep 5 minutes → reboot
   │
-  ├─► Determine current mode based on local time:
+  ├─► SNTP sync (il.pool.ntp.org)
+  │     FAILURE → use RTC, log warning
+  │
+  ├─► Determine mode from current local time:
   │
   │   SCHEDULED_FULL_REFRESH (08:00 / 12:00 / 22:00):
-  │     → perform full ePaper refresh (blank screen, then white)
-  │     → compute sleep until next event
-  │     → deep sleep
+  │     → full ePaper refresh (clear to white)
+  │     → sleep until next event
   │
   │   ACTIVE_WINDOW (05:45–08:00 or 18:00–22:00):
-  │     → GET /display.png with If-None-Match: <nvs:last_etag>
+  │     IF FORCE_REFRESH flag:
+  │       → GET /display.png unconditionally (no ETag header)
+  │       → full refresh on display
+  │       → clear FORCE_REFRESH
+  │     ELSE:
+  │       → GET /display.png with If-None-Match: <settings:last_etag>
   │       200 OK → decode PNG → select refresh mode → update display
-  │                → store new ETag to NVS
+  │                → save new ETag to settings
   │       304 Not Modified → skip display update
-  │       Error → skip display update, log to UART
-  │     → sleep 60 seconds
+  │       Error → skip update, log to console
+  │     → sleep 60 seconds (Zephyr PM soft-off, timer wakeup)
   │
-  │   INACTIVE (all other times):
+  │   INACTIVE:
   │     → compute sleep duration until next window or maintenance
-  │     → deep sleep
+  │     → sleep (PM soft-off)
   │
-  └─► Enter deep sleep
+  └─► Enter sleep
 ```
 
-### 7.3 Wi-Fi Error Display Requirement
+### 7.4 Wi-Fi Error Screen
 
-If Wi-Fi fails to connect after 3 retries, the firmware must display a human-readable error message on the ePaper screen before sleeping. This is the only case where the firmware drives the display without a server-provided image.
+If Wi-Fi fails after retries, display this before sleeping:
 
-The error screen is a simple full refresh displaying:
 ```
-┌─────────────────────────────────────────────────────────┐
-│                                                         │
-│   ⚠  Wi-Fi connection failed                            │
-│                                                         │
-│   Could not connect to: <SSID>                          │
-│   Retrying in 5 minutes.                                │
-│                                                         │
-│   Check that the network is available and that the      │
-│   SSID and password in firmware config are correct.     │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                                                          │
+│   Wi-Fi connection failed                                │
+│                                                          │
+│   Could not connect to: <SSID>                           │
+│   Retrying in 5 minutes.                                 │
+│                                                          │
+│   Check network availability and firmware config.h       │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-The error text is rendered directly on the ESP32 using the UC8179 driver with a hardcoded built-in font (no server PNG needed). This is a self-contained firmware capability.
+Rendered using the UC8179 driver's built-in text rendering directly — no server PNG required.
 
-### 7.4 Build Configuration (ESP-IDF `CMakeLists.txt` + `sdkconfig`)
+### 7.5 Green Button — Manual Full Refresh
 
-ESP-IDF uses CMake as its build system. The project structure is:
+The green button (GPIO3) is configured as a wakeup source. When pressed during sleep, it triggers a boot with `FORCE_REFRESH` flag set, causing an unconditional full refresh of the display regardless of ETag. This is useful for:
+- Testing after firmware changes
+- Forcing a display update after a long inactive period
+- Manually recovering from a ghosted screen
 
+```
+Button press during sleep:
+  → Zephyr GPIO wakeup → boot → FORCE_REFRESH = true
+  → fetch /display.png (no If-None-Match header)
+  → full refresh
+  → continue normal active/inactive loop
+```
+
+### 7.6 Build Configuration
+
+**Project structure:**
 ```
 firmware/
-├── CMakeLists.txt           # Top-level CMake
-├── sdkconfig                # Generated by `idf.py menuconfig`
-├── sdkconfig.defaults       # Checked-in default config values
-├── main/
-│   ├── CMakeLists.txt
-│   ├── main.c               # App entry point
-│   ├── wifi.c / wifi.h
-│   ├── epaper.c / epaper.h  # UC8179 SPI driver
-│   ├── http_client.c        # PNG fetch + ETag logic
-│   ├── png_decode.c         # pngle integration
-│   ├── nvs_store.c          # ETag + counter persistence
-│   ├── schedule.c           # Active window + sleep calculation
-│   └── config.h             # User configuration (see §7.5)
-└── components/
-    └── pngle/               # Vendored PNG decoder library
+├── west.yml                  # Zephyr manifest (pins Zephyr version)
+├── CMakeLists.txt            # Top-level CMake
+├── prj.conf                  # Zephyr Kconfig options
+├── app.overlay               # Device tree overlay (board customisation)
+├── src/
+│   ├── main.c                # App entry point, state machine
+│   ├── wifi.c / wifi.h       # Wi-Fi connect/disconnect
+│   ├── ntp.c / ntp.h         # SNTP sync
+│   ├── http_fetch.c          # PNG fetch with ETag support
+│   ├── png_decode.c          # pngle integration
+│   ├── epaper.c / epaper.h   # UC8179 display control (full/fast/partial)
+│   ├── schedule.c            # Active window + sleep time calculation
+│   ├── button.c              # Green button GPIO wakeup
+│   └── config.h              # User configuration
+├── lib/
+│   └── pngle/                # Vendored PNG decoder
+└── CLAUDE.md                 # Firmware project context for Claude Code
 ```
 
-**Top-level `CMakeLists.txt`:**
-```cmake
-cmake_minimum_required(VERSION 3.16)
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(epaper_dashboard)
+**`prj.conf` (Kconfig):**
 ```
+# Networking
+CONFIG_NETWORKING=y
+CONFIG_NET_IPV4=y
+CONFIG_NET_TCP=y
+CONFIG_DNS_RESOLVER=y
+CONFIG_NET_SOCKETS=y
+CONFIG_HTTP_CLIENT=y
+CONFIG_SNTP=y
 
-**`sdkconfig.defaults` (key settings):**
-```
-# Flash
-CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
-CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# Wi-Fi (ESP32)
+CONFIG_WIFI=y
+CONFIG_ESP32_WIFI=y
 
-# PSRAM (OPI PSRAM on S3R8)
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
+# Display
+CONFIG_DISPLAY=y
 
-# Wi-Fi
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+# Settings (NVS backend for ETag storage)
+CONFIG_SETTINGS=y
+CONFIG_SETTINGS_NVS=y
+CONFIG_NVS=y
+CONFIG_FLASH=y
+CONFIG_FLASH_MAP=y
 
-# Power / Sleep
-CONFIG_PM_ENABLE=y
-CONFIG_FREERTOS_HZ=100
+# Power Management
+CONFIG_PM=y
+CONFIG_PM_DEVICE=y
+
+# GPIO
+CONFIG_GPIO=y
+
+# RTC
+CONFIG_RTC=y
 
 # Logging
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG=y
+CONFIG_LOG_DEFAULT_LEVEL=3
 
-# NVS
-CONFIG_NVS_ASSERT_ERROR_CHECK=y
+# Stack sizes (HTTP + PNG decode need headroom)
+CONFIG_MAIN_STACK_SIZE=8192
+CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=4096
 ```
 
-**Build and flash commands (run in ESP-IDF terminal):**
+**Build and flash commands (from Arch Linux):**
 ```bash
-# First time setup — activate ESP-IDF environment
-. $IDF_PATH/export.sh          # Linux/Mac
-# or on Windows: %IDF_PATH%\export.bat
+# Install west (Zephyr's build tool) and SDK
+pip install west --break-system-packages
+west init ~/zephyrproject
+cd ~/zephyrproject
+west update
+west zephyr-export
 
-# Configure (opens menuconfig UI)
-idf.py set-target esp32s3
-idf.py menuconfig
+# Install Zephyr SDK (toolchain)
+# Download from https://github.com/zephyrproject-rtos/sdk-ng/releases
+# Choose zephyr-sdk-0.17.x-linux-x86_64.tar.xz
+cd ~/zephyrproject
+west sdk install
 
-# Build
-idf.py build
+# Clone and build the firmware
+cd ~/Documents/reTerminal/firmware
+west build -b reterminal_e1001 .
 
-# Flash (E1001 connected via USB-C to /dev/ttyUSB0 on Linux)
-idf.py -p /dev/ttyUSB0 flash monitor
-
-# Flash only (no monitor)
-idf.py -p /dev/ttyUSB0 flash
+# Flash via USB
+west flash --runner esptool
+# or:
+esptool.py -c esp32s3 -p /dev/ttyUSB0 write_flash 0x0 build/zephyr/zephyr.bin
 ```
 
-### 7.5 Configuration (`main/config.h`)
+### 7.7 Configuration (`src/config.h`)
 
 ```c
 // ============================================================
 // [ EDIT ] — fill in before building
 // ============================================================
 
-// Wi-Fi
 #define WIFI_SSID           "Eli"
 #define WIFI_PASSWORD       "1020304050"
-#define WIFI_RETRY_MAX      5
+#define WIFI_RETRY_MAX      3
 #define WIFI_TIMEOUT_MS     15000
 
-// Server
-#define SERVER_HOST         "<!-- laptop local IP, e.g. 192.168.1.50 -->"
+#define SERVER_HOST         "<!-- laptop static IP, e.g. 192.168.1.50 -->"
 #define SERVER_PORT         8080
 #define SERVER_PATH         "/display.png"
 
-// NTP
 #define NTP_SERVER          "il.pool.ntp.org"
 #define TZ_POSIX_STRING     "IST-2IDT,M3.4.4/26,M10.5.0"
 
-// Active windows (local time, 24h)
+// Active windows (24h local time)
 #define MORNING_START_H     5
 #define MORNING_START_M     45
 #define MORNING_END_H       8
@@ -787,8 +853,11 @@ idf.py -p /dev/ttyUSB0 flash
 #define MAINTENANCE_3_H     22
 #define MAINTENANCE_3_M     0
 
-// Refresh ghosting prevention
+// Ghosting prevention
 #define MAX_PARTIAL_BEFORE_FULL  5
+
+// Green button GPIO (wakeup source)
+#define BUTTON_GREEN_PIN    3
 
 // ePaper SPI pins (do not change — hardware fixed)
 #define EPAPER_CLK_PIN      7
@@ -806,125 +875,140 @@ idf.py -p /dev/ttyUSB0 flash
 ### 8.1 Directory Structure
 
 ```
-server/
-├── main.py                  # FastAPI app entry point
-├── renderer.py              # Pillow canvas rendering logic
-├── scheduler.py             # Data fetch scheduling (APScheduler)
-├── sources/
-│   ├── calendar.py          # Google Calendar integration
-│   ├── stocks.py            # Polygon.io stock fetching
-│   ├── weather.py           # Open-Meteo integration
-│   ├── suggestions.py       # Claude API stock suggestions
-│   └── quote.py             # Claude API quote of the day
-├── fonts/
-│   ├── Inter-Bold.ttf
-│   ├── Inter-Medium.ttf
-│   ├── Inter-Regular.ttf
-│   ├── JetBrainsMono-Bold.ttf
-│   ├── JetBrainsMono-Regular.ttf
-│   ├── PlayfairDisplay-Italic.ttf
-│   └── NerdFontsSymbolsOnly.ttf
-├── secrets/
-│   ├── credentials.json     # Google OAuth client secret (never commit)
-│   ├── token.json           # Google OAuth refresh token (never commit)
-│   └── .env                 # All API keys and config (never commit)
-├── cache/
-│   └── display.png          # Latest rendered image
-├── quotes_fallback.json     # 10 hardcoded fallback quotes
-├── requirements.txt
-├── nssm_install.ps1         # Windows Service setup script
-└── CLAUDE.md                # Project context for Claude Code
+C:\Users\Eli Zeltser\Documents\reTerminal\
+├── .venv\                       # Python virtual environment (never commit)
+├── server\
+│   ├── main.py                  # FastAPI app entry point
+│   ├── renderer.py              # Pillow canvas + zone drawing
+│   ├── scheduler.py             # APScheduler task definitions
+│   ├── sources\
+│   │   ├── calendar.py          # Google Calendar — birthday fetch
+│   │   ├── stocks.py            # Polygon.io price fetch
+│   │   ├── weather.py           # Open-Meteo fetch
+│   │   ├── suggestions.py       # Claude API — stock suggestion
+│   │   └── quote.py             # Claude API — daily quote
+│   ├── fonts\
+│   │   ├── Inter-Bold.ttf
+│   │   ├── Inter-Medium.ttf
+│   │   ├── Inter-Regular.ttf
+│   │   ├── JetBrainsMono-Bold.ttf
+│   │   ├── JetBrainsMono-Regular.ttf
+│   │   ├── PlayfairDisplay-Italic.ttf
+│   │   └── NerdFontsSymbolsOnly-Regular.ttf
+│   ├── secrets\
+│   │   ├── credentials.json     # Google OAuth client secret — NEVER COMMIT
+│   │   ├── token.json           # Google OAuth refresh token — NEVER COMMIT
+│   │   └── .env                 # All API keys — NEVER COMMIT
+│   ├── cache\
+│   │   └── display.png          # Latest rendered image
+│   ├── quotes_fallback.json     # 10 fallback quotes
+│   ├── requirements.txt
+│   ├── nssm_install.ps1         # Windows Service setup script
+│   └── CLAUDE.md                # Server project context for Claude Code
+└── firmware\                    # Zephyr firmware project (see §7)
+    └── CLAUDE.md                # Firmware project context for Claude Code
+```
+
+**Virtual environment setup (first time):**
+```powershell
+cd "C:\Users\Eli Zeltser\Documents\reTerminal"
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install fastapi uvicorn pillow httpx apscheduler `
+            google-api-python-client google-auth-oauthlib `
+            anthropic python-dotenv
+pip freeze > server\requirements.txt
 ```
 
 ### 8.2 API Endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/display.png` | GET | Returns current rendered PNG. Supports `If-None-Match` ETag header. Returns `304` if unchanged. |
-| `/status` | GET | Returns JSON: last render time, data source statuses, next scheduled fetch times, current ETag. |
-| `/refresh` | POST | Forces immediate re-render and re-fetch of all data sources. |
+| `/display.png` | GET | Rendered PNG with ETag. Returns `304` if unchanged. |
+| `/status` | GET | JSON: last render time, data source statuses, next scheduled fetches, ETag. |
+| `/refresh` | POST | Force immediate re-render and data re-fetch. |
 
 ### 8.3 Render Pipeline
 
 ```
 scheduler triggers render()
   │
-  ├─► Fetch all sources in parallel (asyncio.gather):
-  │     calendar.get_events()
-  │     weather.get_today()          [cached after 05:45 fetch]
-  │     stocks.get_prices(tickers)   [cached after scheduled fetch]
-  │     quote.get_today()            [cached after 05:45 fetch]
-  │     suggestions.get_suggestion() [called only on trigger]
+  ├─► Fetch in parallel (asyncio.gather):
+  │     calendar.get_birthdays_today()
+  │     weather.get_today()           [cached post-05:45]
+  │     stocks.get_prices(tickers)    [cached post-scheduled-fetch]
+  │     quote.get_today()             [cached post-05:45]
+  │     suggestions.maybe_get()       [only if trigger conditions met]
   │
   ├─► renderer.compose(data) → PIL Image (800×480, mode "1")
-  │     draw_date_bar()
-  │     draw_weather_zone()           [includes Nerd Font icon]
-  │     draw_clock_zone()
-  │     draw_calendar_zone()
-  │     draw_stocks_zone()
-  │     draw_quote_zone()
-  │     draw_divider_lines()
+  │     draw_quote_strip()            [y=0..50]
+  │     draw_weather_zone()           [x=0..240, y=50..320]
+  │     draw_clock_zone()             [x=240..800, y=50..210]
+  │     draw_birthday_zone()          [x=240..800, y=210..320, if any]
+  │     draw_stocks_zone()            [y=320..400]
+  │     draw_footer()                 [y=400..480]
+  │     draw_dividers()
   │
-  ├─► Compute MD5 hash of PNG bytes → new ETag
+  ├─► MD5 hash of PNG bytes → ETag
   │
-  ├─► If ETag changed → save to cache/display.png, update stored ETag
+  ├─► If ETag changed → write cache\display.png, update stored ETag
   │
-  └─► Return (image_bytes, etag)
+  └─► Return (bytes, etag)
 ```
 
 ### 8.4 Scheduling
 
 | Task | Schedule | Notes |
 |---|---|---|
-| Full render | Every 60s during active windows; every 30 min otherwise | Always runs — E1001 uses ETag to decide whether to refresh |
-| Weather fetch | Daily at 05:45 | Full day data fetched once; includes min/max |
-| Stock fetch | Daily at 05:45 and 17:30 | See §6.2 for rationale |
-| Calendar fetch | Daily at 05:45 and 18:00 | Re-fetched for evening to catch new events |
+| Full render | Every 60s during active windows; every 30 min otherwise | E1001 uses ETag — no wasted refresh |
+| Weather fetch | Daily at 05:45 | Daily min/max included; cached all day |
+| Stock fetch | Daily at 05:45 and 17:30 | See §6.2 |
+| Calendar fetch | Daily at 05:45 and 18:00 | Re-fetched for evening window |
 | Quote generation | Daily at 05:45 | Cached all day |
-| AI suggestions | On trigger: price change > 1.5% or at scheduled fetch | Cooldown 30 min per ticker |
+| AI suggestions | On trigger (price change > 1.5%) | 30 min cooldown per ticker |
 
-Scheduling implemented with `APScheduler` (AsyncIOScheduler):
-```bash
-pip install apscheduler
-```
-
-### 8.5 `CLAUDE.md` (for Claude Code sessions)
+### 8.5 `server\CLAUDE.md`
 
 ```markdown
 # CLAUDE.md — ePaper Dashboard Server
 
-## What this project does
-Python FastAPI server running on Windows 10 (Asus A554I laptop).
-Renders an 800×480 1-bit PNG dashboard and serves it to a
-Seeed Studio reTerminal E1001 ePaper display over local Wi-Fi via HTTP.
+## What this does
+FastAPI server on Windows 10, Asus A554I.
+Renders 800×480 1-bit PNG dashboard for Seeed reTerminal E1001 over HTTP.
+All Python runs inside the venv at:
+  C:\Users\Eli Zeltser\Documents\reTerminal\.venv
 
-## Commands
-- Run (development): `python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload`
-- Force render:       `curl -X POST http://localhost:8080/refresh`
-- Check status:       `curl http://localhost:8080/status`
-- Install as service: `powershell -File nssm_install.ps1`
+## Activate venv before any pip or python command
+  .venv\Scripts\Activate.ps1
+
+## Run (development)
+  cd server
+  python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+
+## Useful commands
+  curl -X POST http://localhost:8080/refresh
+  curl http://localhost:8080/status
 
 ## Critical constraints
-- Output image MUST be exactly 800×480 pixels, PIL mode "1" (1-bit, black/white)
-- Fonts MUST be loaded with ImageFont.truetype() from server/fonts/ — never use default fonts
-- All data fetching is async — use httpx.AsyncClient, never the `requests` library
-- Secrets are in server/secrets/.env — never hardcode any key or credential in source
+- Image: exactly 800×480 px, PIL mode "1" (1-bit)
+- Fonts: always ImageFont.truetype() from server\fonts\ — never default fonts
+- HTTP: always httpx.AsyncClient, never `requests`
+- Secrets: never hardcode — always load from server\secrets\.env
 
 ## Layout zones (pixels)
-- Date bar:  x=0,   y=0,   w=800, h=50
+- Quote:     x=0,   y=0,   w=800, h=50
 - Weather:   x=0,   y=50,  w=240, h=270
-- Clock:     x=240, y=50,  w=320, h=270
-- Calendar:  x=560, y=50,  w=240, h=270
+- Clock:     x=240, y=50,  w=560, h=160
+- Birthdays: x=240, y=210, w=560, h=110  (hidden if none today)
 - Stocks:    x=0,   y=320, w=800, h=80
-- Quote:     x=0,   y=400, w=800, h=80
+- Footer:    x=0,   y=400, w=800, h=80
 
-## Data source notes
-- Google Calendar: token.json auto-refreshes; do not regenerate credentials
-- Stocks: Polygon.io, fetched at 05:45 (prev close) and 17:30 (intraday)
-- Weather: Open-Meteo, no API key, lat=32.08 lon=34.78, fetch at 05:45 only
-- Quote: Claude Haiku, generated at 05:45, cached all day
-- AI suggestions: Claude Haiku, max 60 tokens, 30 min cooldown per ticker
-- Fallback quotes: server/quotes_fallback.json (10 items)
+## Data sources
+- Calendar: Birthdays only, token.json auto-refreshes
+- Stocks: Polygon.io, fetched at 05:45 and 17:30
+- Weather: Open-Meteo, lat=32.08 lon=34.78, fetch at 05:45
+- Quote: Claude Haiku, 100 tokens, 05:45 daily, fallback in quotes_fallback.json
+- AI suggestions: Claude Haiku, 60 tokens, 30 min cooldown
 ```
 
 ---
@@ -932,6 +1016,8 @@ Seeed Studio reTerminal E1001 ePaper display over local Wi-Fi via HTTP.
 ## 9. Configuration & Secrets Management
 
 ### 9.1 Server `.env` file
+
+Location: `C:\Users\Eli Zeltser\Documents\reTerminal\server\secrets\.env`
 
 ```env
 # ── Google Calendar ──────────────────────────────────────────
@@ -955,22 +1041,24 @@ WEATHER_UNITS=celsius
 
 # ── Claude API ───────────────────────────────────────────────
 ANTHROPIC_API_KEY=<!-- your Anthropic API key -->
-QUOTE_PROMPT_MAX_CHARS=120
+QUOTE_MAX_CHARS=120
 
 # ── Server ───────────────────────────────────────────────────
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8080
-CACHE_DIR=cache
-FONTS_DIR=fonts
 ```
 
-### 9.2 Secrets That Must Never Be Committed
+### 9.2 `.gitignore`
 
-Add to `.gitignore`:
 ```
+.venv/
 server/secrets/
-server/.env
+server/cache/
 *.env
+__pycache__/
+*.pyc
+build/
+.west/
 ```
 
 ---
@@ -979,16 +1067,16 @@ server/.env
 
 | Failure scenario | Behaviour |
 |---|---|
-| **Wi-Fi fails at boot (E1001)** | Retry 5 times with 5s delay. On final failure: display Wi-Fi error screen (see §7.3), deep sleep 5 min, retry |
-| **NTP sync fails (E1001)** | Use RTC time, log warning to UART serial. Continue normally — time may drift slightly |
-| **Server unreachable (E1001)** | Use last displayed image (no update). Sleep and retry next minute |
-| **Google Calendar API error** | Display `Calendar unavailable` in calendar zone. Do not show stale data |
-| **Polygon.io error / rate limit** | Display last known price with `[delayed]` label |
-| **Claude API error (suggestions)** | Suppress suggestion line; leave that slot empty |
-| **Claude API error (quote)** | Select a random quote from `quotes_fallback.json` |
-| **Weather API error** | Display `Weather unavailable` in weather zone |
-| **Server render exception** | Log full traceback to console. Serve last valid cached PNG unchanged. Do not crash the server |
-| **PNG decode error (E1001)** | Skip display update, log error to UART, sleep normally |
+| **Wi-Fi fails at boot (E1001)** | Retry 3×, 5s apart. Then: render error screen, sleep 5 min, retry |
+| **NTP sync fails** | Use RTC, log warning. Self-corrects next boot |
+| **Server unreachable** | Keep last displayed image. Sleep normally and retry |
+| **Google Calendar API error** | Hide birthday zone silently — no error text |
+| **Polygon.io error / rate limit** | Show last known price with `[delayed]` label |
+| **Claude API error (suggestion)** | Leave suggestion line blank |
+| **Claude API error (quote)** | Random entry from `quotes_fallback.json` |
+| **Weather API error** | Show `—` in weather zone (no cached stale data shown) |
+| **Server render exception** | Log traceback. Serve last cached PNG. Server does not crash |
+| **PNG decode error (E1001)** | Skip update. Log to console. Sleep normally |
 
 ---
 
@@ -998,79 +1086,71 @@ server/.env
 
 | Tool | Purpose | Install |
 |---|---|---|
-| Python 3.12 | Server runtime | [python.org](https://python.org) |
+| Python 3.12 | Runtime | [python.org](https://python.org) |
+| venv | Isolation | Built into Python: `python -m venv .venv` |
 | FastAPI + Uvicorn | HTTP server | `pip install fastapi uvicorn` |
 | Pillow | Image rendering | `pip install pillow` |
 | httpx | Async HTTP client | `pip install httpx` |
-| APScheduler | Task scheduling | `pip install apscheduler` |
-| google-api-python-client | Google Calendar SDK | `pip install google-api-python-client google-auth-oauthlib` |
-| anthropic | Claude API SDK | `pip install anthropic` |
+| APScheduler | Scheduling | `pip install apscheduler` |
+| google-api-python-client | Calendar SDK | `pip install google-api-python-client google-auth-oauthlib` |
+| anthropic | Claude SDK | `pip install anthropic` |
 | python-dotenv | `.env` loading | `pip install python-dotenv` |
-| NSSM | Windows Service manager | [nssm.cc](https://nssm.cc/download) |
-| Node.js | Required for Claude Code | [nodejs.org](https://nodejs.org) |
-| Claude Code | AI-assisted development | `npm install -g @anthropic-ai/claude-code` |
+| NSSM | Windows Service | [nssm.cc](https://nssm.cc/download) |
+| Claude Code | AI dev | `npm install -g @anthropic-ai/claude-code` (requires Node.js) |
 
-**Full install:**
-```powershell
-pip install fastapi uvicorn pillow httpx apscheduler google-api-python-client `
-            google-auth-oauthlib anthropic python-dotenv
-```
-
-### 11.2 E1001 Firmware Side (developed from Arch Linux)
+### 11.2 E1001 Firmware Side (Arch Linux)
 
 | Tool | Purpose | Install |
 |---|---|---|
-| ESP-IDF v5.x | Build system + framework | `yay -S esp-idf` (installs to `/opt/esp-idf`) |
-| esptool | Firmware flashing | `pip install esptool --break-system-packages` |
-| OpenOCD (Espressif fork) | JTAG debugging (optional) | [github.com/espressif/openocd-esp32](https://github.com/espressif/openocd-esp32/releases) |
+| west | Zephyr build tool | `pip install west --break-system-packages` |
+| Zephyr SDK | ARM/Xtensa toolchain | Via `west sdk install` |
+| CMake + Ninja | Build system | `sudo pacman -S cmake ninja` |
+| esptool | Flashing | `pip install esptool --break-system-packages` |
+| Python deps | Zephyr scripts | `pip install -r ~/zephyrproject/zephyr/scripts/requirements.txt --break-system-packages` |
 
 ```bash
-# Activate ESP-IDF environment (run before any idf.py command)
-source /opt/esp-idf/export.sh
+# Full Zephyr workspace init (one time)
+pip install west --break-system-packages
+west init ~/zephyrproject
+cd ~/zephyrproject && west update && west zephyr-export
+west sdk install
 
 # Build
-cd firmware/
-idf.py set-target esp32s3
-idf.py build
+cd ~/Documents/reTerminal/firmware
+west build -b reterminal_e1001 .
 
-# Flash (E1001 on /dev/ttyUSB0)
-idf.py -p /dev/ttyUSB0 flash monitor
+# Flash
+west flash --runner esptool
 ```
 
-> **Note:** Keep `PLATFORMIO_CORE_DIR=/opt/platformio` set in `.bashrc` from the earlier disk space fix. PlatformIO is not used for this project's firmware but the env var prevents any accidental installs to `/home`.
+> Keep `PLATFORMIO_CORE_DIR=/opt/platformio` in `.bashrc` — PlatformIO is not used here but the var prevents accidental installs to the full `/home` partition.
 
-### 11.3 Claude Code Setup
+### 11.3 Claude Code
 
 ```bash
-# Install (requires Node.js)
-npm install -g @anthropic-ai/claude-code
+# In server directory (Windows)
+cd "C:\Users\Eli Zeltser\Documents\reTerminal\server"
+claude     # reads server\CLAUDE.md
 
-# Start a session in the server directory
-cd server/
-claude   # reads CLAUDE.md automatically
-
-# Start a session in the firmware directory
-cd firmware/
-claude   # reads firmware/CLAUDE.md (create a separate one for firmware context)
+# In firmware directory (Arch Linux)
+cd ~/Documents/reTerminal/firmware
+claude     # reads firmware\CLAUDE.md
 ```
 
 ---
 
 ## 12. Open Questions & Decisions Pending
 
-> Use this section to track unresolved decisions. Remove items as they are decided.
-
 | # | Question | Options / Notes | Decision |
 |---|---|---|---|
-| 1 | Tickers to track | Fill in your personal watchlist in §6.2 and `.env` | <!-- TBD --> |
-| 2 | Additional calendars | Currently: Birthdays from primary only. Add shared family calendar? | <!-- TBD --> |
-| 3 | Stock suggestion trigger | Currently set to 1.5% daily change. Adjust in `.env` | <!-- TBD --> |
-| 4 | Laptop hostname vs IP | Using static IP is more reliable. Set DHCP reservation in router for laptop MAC | <!-- TBD --> |
-| 5 | E1001 IP assignment | Recommend DHCP reservation in router so IP is stable across reboots | <!-- TBD --> |
-| 6 | v1 button behaviour | Green button could force a manual full refresh — useful for testing | <!-- TBD --> |
-| 7 | Fallback quote list | Populate `server/quotes_fallback.json` with 10 personal favourite quotes | <!-- TBD --> |
-| 8 | UC8179 driver source | Use Seeed reference firmware waveforms vs community ESP-IDF port | <!-- TBD --> |
-| 9 | Quote style preference | Currently general life/creativity themes. Narrow to specific themes? | <!-- TBD --> |
+| 1 | Tickers to track | Fill in §6.2 and `.env` | <!-- TBD --> |
+| 2 | Stock suggestion trigger % | Currently 1.5%. Adjust in `.env` | <!-- TBD --> |
+| 3 | E1001 IP assignment | Recommend DHCP reservation in router for E1001 MAC | <!-- TBD --> |
+| 4 | Laptop static IP | Fill in §2.3 after running `ipconfig` | <!-- TBD --> |
+| 5 | Fallback quote list | Populate `quotes_fallback.json` with 10 favourites (see §6.5) | <!-- TBD --> |
+| 6 | Green button refresh | **Decided: implemented.** Full refresh on button press. See §7.5. | ✅ Done |
+| 7 | ZEReader UC8179 driver | Reference or fork from [github.com/teslabs/zereader](https://github.com/teslabs/zereader) | <!-- TBD — confirm license --> |
+| 8 | Birthday zone if empty | Currently: clock expands vertically. Confirm this looks good. | <!-- TBD --> |
 
 ---
 
@@ -1079,8 +1159,9 @@ claude   # reads firmware/CLAUDE.md (create a separate one for firmware context)
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 01.05.2026 | Initial draft |
-| 0.2 | 01.05.2026 | Added quote of the day (§6.5); expanded network topology with setup commands and security explanation; added server process management rationale (NSSM, FastAPI/Uvicorn choice explained); redesigned grid layout (clock center, weather left, calendar right, quote zone); added explicit weather fields (min/max temp, wind, Nerd Font icons); NTP sync every boot clarified in §5.5; firmware changed to ESP-IDF throughout §7 (libraries, build config, state machine); Wi-Fi error screen requirement added (§7.3); stock update schedule changed to 05:45 + 17:30 with rationale (§6.2); `sources/quote.py` added to directory structure; open questions updated |
+| 0.2 | 01.05.2026 | Added quote of the day; expanded network topology; NSSM + FastAPI rationale; redesigned grid; weather min/max/wind/icons; NTP sync §5.5; ESP-IDF firmware; Wi-Fi error screen; stock schedule 05:45+17:30 |
+| 0.3 | 01.05.2026 | Virtual environment path specified (`C:\Users\Eli Zeltser\Documents\reTerminal\.venv`); all server paths updated to full Windows path; Ethernet static IP setup with full step-by-step commands; layout redesigned: quote top, clock+birthdays merged center, birthdays-only calendar, stocks bottom, footer date+time; quote sources expanded to include literary works (Dune, The Alchemist, history); firmware changed from ESP-IDF to Zephyr RTOS (rationale: official E1001 board support + existing UC8179 driver in ZEReader); all §7 rewritten for Zephyr (`prj.conf`, `west.yml`, west commands, Zephyr PM subsystem); green button wakeup specified and resolved from open questions; directory structure updated to show both `server\` and `firmware\` under project root |
 
 ---
 
-*All `<!-- EDIT -->` and `<!-- TBD -->` markers indicate places requiring your input before implementation begins.*
+*All `<!-- EDIT -->` and `<!-- TBD -->` markers indicate places requiring input before implementation begins.*
