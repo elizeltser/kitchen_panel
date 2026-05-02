@@ -1,0 +1,7 @@
+/*
+ * No overrides needed — the board DTS already defines:
+ *   zephyr,display = &epd_uc8179  (UC8179 800x480 ePaper on SPI2)
+ *   buttons: refresh_key0 (GPIO3), left_key1 (GPIO4), right_key2 (GPIO5)
+ *   green_led0 (GPIO6, active-low)
+ *   pcf8563_rtc, wifi, uart0
+ */

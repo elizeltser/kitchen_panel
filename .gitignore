@@ -1,0 +1,12 @@
+.venv/
+server/secrets/
+server/cache/
+server/fonts/*.ttf
+__pycache__/
+*.pyc
+*.pyo
+build/
+.west/
+*.env
+*.egg-info/
+dist/

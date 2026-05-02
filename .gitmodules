@@ -1,0 +1,3 @@
+[submodule "firmware/pngle"]
+	path = firmware/pngle
+	url = https://github.com/kikuchan/pngle.git

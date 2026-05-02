@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Quote Library</h1>
+<p>
+  Total: <strong>{{ total }}</strong> quotes
+  {% if today_quote %}
+  &nbsp;|&nbsp; Today: <em>"{{ today_quote.quote[:70] }}{% if today_quote.quote|length > 70 %}…{% endif %}"</em>
+  &mdash; {{ today_quote.attribution }}
+  {% endif %}
+</p>
+
+<h2>Upload Full File</h2>
+<p>Prepare a large quotes.json using claude.ai, then upload it here to replace the current library.</p>
+<form action="/api/quotes/upload" method="post" enctype="multipart/form-data">
+  <input type="file" name="file" accept=".json" required>
+  <button type="submit" class="btn-primary">Upload quotes.json</button>
+</form>
+
+<h2>Add Single Quote</h2>
+<form id="addForm">
+  <input type="text" id="newQuote" placeholder="Quote text" style="width:55%" required>
+  <input type="text" id="newAttr" placeholder="Attribution" style="width:25%" required>
+  <button type="submit" class="btn-primary">Add</button>
+</form>
+
+<h2>All Quotes</h2>
+<table>
+<thead><tr><th>#</th><th>Quote</th><th>Attribution</th><th></th></tr></thead>
+<tbody>
+{% for q in quotes %}
+<tr>
+  <td>{{ loop.index0 }}</td>
+  <td>{{ q.quote[:90] }}{% if q.quote|length > 90 %}…{% endif %}</td>
+  <td>{{ q.attribution }}</td>
+  <td><button class="btn-danger" onclick="deleteQuote({{ loop.index0 }})">Delete</button></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<br>
+<button class="btn-success" onclick="fetch('/refresh',{method:'POST'}).then(()=>alert('Display refreshed!'))">
+  Refresh Display Now
+</button>
+
+<script>
+document.getElementById('addForm').onsubmit = async e => {
+  e.preventDefault();
+  const res = await fetch('/api/quotes', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({quote: newQuote.value, attribution: newAttr.value})
+  });
+  if (res.ok) location.reload();
+  else alert('Error: ' + await res.text());
+};
+
+async function deleteQuote(idx) {
+  if (!confirm('Delete this quote?')) return;
+  const res = await fetch(`/api/quotes/${idx}`, {method: 'DELETE'});
+  if (res.ok) location.reload();
+  else alert('Error: ' + await res.text());
+}
+</script>
+{% endblock %}

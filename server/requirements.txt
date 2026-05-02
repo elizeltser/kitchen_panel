@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pillow
+httpx
+apscheduler
+jinja2
+google-api-python-client
+google-auth-oauthlib
+python-dotenv
+python-multipart

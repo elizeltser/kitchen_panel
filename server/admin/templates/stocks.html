@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Stocks &amp; Portfolio</h1>
+
+<h2>Watchlist</h2>
+<table>
+<thead><tr><th>Ticker</th><th>Last Price</th><th></th></tr></thead>
+<tbody>
+{% for t in tickers %}
+<tr>
+  <td><strong>{{ t }}</strong></td>
+  <td>{% if prices.get(t) %}${{ "%.2f"|format(prices[t]) }}{% else %}&mdash;{% endif %}</td>
+  <td><button class="btn-danger" onclick="deleteTicker('{{ t }}')">Remove</button></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<form id="addTickerForm">
+  <input type="text" id="newTicker" placeholder="e.g. AAPL" style="width:8rem; text-transform:uppercase" required>
+  <button type="submit" class="btn-primary">Add Ticker</button>
+</form>
+
+<h2>Portfolio</h2>
+<table>
+<thead>
+<tr>
+  <th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Notes</th>
+  <th>Current Price</th><th>Value</th><th>P&amp;L</th><th></th>
+</tr>
+</thead>
+<tbody>
+{% for h in portfolio.holdings %}
+{% set price = prices.get(h.ticker) %}
+{% set value = (h.shares * price) if price else none %}
+{% set cost  = h.shares * h.avg_cost %}
+{% set pnl   = (value - cost) if value is not none else none %}
+<tr>
+  <td><strong>{{ h.ticker }}</strong></td>
+  <td>{{ h.shares }}</td>
+  <td>${{ "%.2f"|format(h.avg_cost) }}</td>
+  <td>{{ h.notes }}</td>
+  <td>{% if price %}${{ "%.2f"|format(price) }}{% else %}&mdash;{% endif %}</td>
+  <td>{% if value %}${{ "%.0f"|format(value) }}{% else %}&mdash;{% endif %}</td>
+  <td style="color:{% if pnl is not none %}{% if pnl >= 0 %}green{% else %}red{% endif %}{% else %}inherit{% endif %}">
+    {% if pnl is not none %}{{ "+" if pnl >= 0 else "" }}${{ "%.0f"|format(pnl) }}{% else %}&mdash;{% endif %}
+  </td>
+  <td><button class="btn-danger" onclick="deleteHolding('{{ h.ticker }}')">Remove</button></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<h3>Add Holding</h3>
+<form id="addHoldingForm">
+  <input type="text"   id="hTicker" placeholder="Ticker" style="width:6rem;text-transform:uppercase" required>
+  <input type="number" id="hShares" placeholder="Shares" step="0.001" style="width:7rem" required>
+  <input type="number" id="hCost"   placeholder="Avg Cost $" step="0.01" style="width:9rem" required>
+  <input type="text"   id="hNotes"  placeholder="Notes (optional)" style="width:14rem">
+  <button type="submit" class="btn-primary">Add Holding</button>
+</form>
+
+<br>
+<button class="btn-success" onclick="fetch('/refresh',{method:'POST'}).then(()=>alert('Display refreshed!'))">
+  Refresh Display Now
+</button>
+
+<script>
+document.getElementById('addTickerForm').onsubmit = async e => {
+  e.preventDefault();
+  const res = await fetch('/api/tickers', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ticker: newTicker.value.toUpperCase()})
+  });
+  if (res.ok) location.reload();
+  else alert('Error: ' + await res.text());
+};
+
+async function deleteTicker(t) {
+  if (!confirm(`Remove ${t} from watchlist?`)) return;
+  const res = await fetch(`/api/tickers/${t}`, {method: 'DELETE'});
+  if (res.ok) location.reload();
+  else alert('Error: ' + await res.text());
+}
+
+document.getElementById('addHoldingForm').onsubmit = async e => {
+  e.preventDefault();
+  const res = await fetch('/api/portfolio', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      ticker:   hTicker.value.toUpperCase(),
+      shares:   parseFloat(hShares.value),
+      avg_cost: parseFloat(hCost.value),
+      notes:    hNotes.value
+    })
+  });
+  if (res.ok) location.reload();
+  else alert('Error: ' + await res.text());
+};
+
+async function deleteHolding(t) {
+  if (!confirm(`Remove ${t} from portfolio?`)) return;
+  const res = await fetch(`/api/portfolio/${t}`, {method: 'DELETE'});
+  if (res.ok) location.reload();
+  else alert('Error: ' + await res.text());
+}
+</script>
+{% endblock %}
