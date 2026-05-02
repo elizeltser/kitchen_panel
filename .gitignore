@@ -10,3 +10,4 @@ build/
 *.env
 *.egg-info/
 dist/
+docs/

@@ -17,7 +17,7 @@ Hosts admin panel at /admin for managing quotes, stocks, portfolio.
   # then open /tmp/test.png to inspect the rendered image
 
 ## Critical constraints
-- Image: exactly 800×480 px, PIL mode "1" (1-bit black/white)
+- Image: exactly 800×480 px, PIL mode "L" (8-bit grayscale)
 - Fonts: always ImageFont.truetype() from server/fonts/ — never PIL default fonts
 - HTTP: always httpx.AsyncClient — never requests library
 - Secrets: load from server/secrets/.env — never hardcode

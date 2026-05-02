@@ -27,8 +27,10 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define PNG_BUF_SIZE (512 * 1024)
 static EXT_RAM uint8_t png_buf[PNG_BUF_SIZE];
 
-#define FB_SIZE (800 * 480 / 8)
-static EXT_RAM uint8_t fb[FB_SIZE];
+#define FB_SIZE (800 * 480 / 8)   /* 48000 bytes — one 1-bit plane */
+static EXT_RAM uint8_t fb[FB_SIZE];        /* kept for fallback */
+static EXT_RAM uint8_t fb_dtm1[FB_SIZE];
+static EXT_RAM uint8_t fb_dtm2[FB_SIZE];
 
 /* ETag storage (Stage 2: move to NVS) */
 static char stored_etag[64] = "";
@@ -41,6 +43,10 @@ int main(void)
 	button_init();
 	if (epaper_init()) {
 		LOG_ERR("ePaper init failed — halting");
+		return -1;
+	}
+	if (epaper_4gray_init()) {
+		LOG_ERR("4-gray init failed — halting");
 		return -1;
 	}
 
@@ -76,15 +82,9 @@ int main(void)
 		if (result == HTTP_FETCH_OK && bytes > 0) {
 			LOG_INF("Received %zu bytes, ETag: %s", bytes, new_etag);
 
-			if (png_decode(png_buf, bytes, fb, 800, 480) == 0) {
-				bool do_full = (refresh_counter % MAX_PARTIAL_BEFORE_FULL == 0);
-				if (do_full) {
-					LOG_INF("Full refresh (#%d)", refresh_counter);
-					epaper_full_refresh(fb, FB_SIZE);
-				} else {
-					LOG_INF("Fast refresh (#%d)", refresh_counter);
-					epaper_fast_refresh(fb, FB_SIZE);
-				}
+			if (png_decode_4gray(png_buf, bytes, fb_dtm1, fb_dtm2, 800, 480) == 0) {
+				LOG_INF("4-gray refresh (#%d)", refresh_counter);
+				epaper_4gray_refresh(fb_dtm1, fb_dtm2, FB_SIZE);
 				refresh_counter++;
 				strncpy(stored_etag, new_etag, sizeof(stored_etag) - 1);
 			} else {

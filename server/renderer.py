@@ -88,7 +88,7 @@ def draw_quote_strip(draw, quote: Optional[dict], scale: int = 1):
     if not quote:
         quote = {"quote": "Not all those who wander are lost.", "attribution": "J.R.R. Tolkien"}
 
-    fq = _font("PlayfairDisplay-Italic.ttf", 20 * s)
+    fq = _font("PlayfairDisplay-Italic.ttf", 25 * s)
     fa = _font("Inter-Regular.ttf", 14 * s)
 
     lines = _wrap(draw, fq, quote["quote"], (W - 20) * s, max_lines=2)
@@ -111,24 +111,24 @@ def draw_weather_zone(draw, weather: Optional[dict], scale: int = 1):
         return
 
     y = (CONTENT_Y + 16) * s
-    fi = _font("NerdFontsSymbolsOnly-Regular.ttf", 52 * s)
-    fd = _font("Inter-Regular.ttf", 17 * s)
-    ft = _font("Inter-Bold.ttf", 20 * s)
-    fr = _font("Inter-Regular.ttf", 16 * s)
+    fi = _font("NerdFontsSymbolsOnly-Regular.ttf", 72 * s)
+    fd = _font("Inter-Regular.ttf", 25 * s)
+    ft = _font("Inter-Bold.ttf", 35 * s)
+    fr = _font("Inter-Regular.ttf", 20 * s)
 
     icon = weather.get("icon", "")
     if icon:
         _center(draw, fi, icon, cx, y + 26 * s)
-        y += 64 * s
+        y += 80 * s
 
     _center(draw, fd, weather.get("description", ""), cx, y)
-    y += 26 * s
+    y += 40 * s
 
     tmax = weather.get("temp_max")
     tmin = weather.get("temp_min")
     if tmax is not None and tmin is not None:
         _center(draw, ft, f"\u2191{tmax:.0f}\u00b0  \u2193{tmin:.0f}\u00b0", cx, y)
-        y += 30 * s
+        y += 45 * s
 
     rain = weather.get("rain_pct")
     if rain is not None:
@@ -206,8 +206,7 @@ def compose(weather=None, birthdays=None, stocks=None, quote=None) -> tuple:
     draw_dividers(draw, has_bdays, scale=S)
 
     img_small = img.resize((W, H), Image.LANCZOS)
-    img1 = img_small.convert("1", dither=Image.Dither.NONE)
     buf = io.BytesIO()
-    img1.save(buf, format="PNG")
+    img_small.save(buf, format="PNG")
     png = buf.getvalue()
     return png, hashlib.md5(png).hexdigest()

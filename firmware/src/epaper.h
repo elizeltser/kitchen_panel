@@ -24,3 +24,9 @@ void epaper_power_off(void);
 
 /** Display a plain-text error message (uses built-in font). */
 void epaper_show_error(const char *msg);
+
+/** Initialize UC8179 for 4-gray (OTP waveform + TSSET trick). Call after epaper_init(). */
+int epaper_4gray_init(void);
+
+/** Full 4-gray refresh. dtm1/dtm2 are the two 48000-byte plane buffers. */
+int epaper_4gray_refresh(const uint8_t *dtm1, const uint8_t *dtm2, size_t plane_len);

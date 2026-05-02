@@ -14,6 +14,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/display.h>
+#include <zephyr/drivers/mipi_dbi.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
 
@@ -24,6 +26,20 @@ LOG_MODULE_REGISTER(epaper, LOG_LEVEL_INF);
 #define FB_BYTES        (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8)
 
 static const struct device *display_dev;
+static const struct device *mipi_dev;
+
+/* MIPI DBI SPI driver overrides .cs from DTS; frequency matches mipi-max-frequency */
+static const struct mipi_dbi_config dbi_cfg = {
+	.mode = MIPI_DBI_MODE_SPI_4WIRE,
+	.config = {
+		.frequency = 4000000,
+		.operation = SPI_OP_MODE_MASTER | SPI_WORD_SET(8),
+	},
+};
+
+/* BUSY pin — active-low, already configured as input by the UC81xx driver */
+static const struct gpio_dt_spec busy_gpio =
+	GPIO_DT_SPEC_GET(DT_CHOSEN(zephyr_display), busy_gpios);
 
 int epaper_init(void)
 {
@@ -33,6 +49,14 @@ int epaper_init(void)
 		return -ENODEV;
 	}
 	display_set_pixel_format(display_dev, PIXEL_FORMAT_MONO10);
+
+	/* DT_PARENT of epd_uc8179 = the mipi_dbi_epd controller */
+	mipi_dev = DEVICE_DT_GET(DT_PARENT(DT_CHOSEN(zephyr_display)));
+	if (!device_is_ready(mipi_dev)) {
+		LOG_ERR("MIPI DBI device not ready");
+		return -ENODEV;
+	}
+
 	LOG_INF("ePaper display initialised");
 	return 0;
 }
@@ -135,4 +159,72 @@ void epaper_show_error(const char *msg)
 	 * A proper implementation would render text using a bitmap font.
 	 * For now, log only; the display retains its last image. */
 	LOG_ERR("ePaper error screen: %s", msg);
+}
+
+/* --- 4-gray helpers ---------------------------------------------------- */
+
+static void epaper_4gray_busy_wait(void)
+{
+	/* gpio_pin_get_dt returns 1 = active = busy (active-low: low pin = busy) */
+	while (gpio_pin_get_dt(&busy_gpio) > 0) {
+		k_msleep(5);
+	}
+}
+
+static int epaper_4gray_cmd(uint8_t cmd, const uint8_t *data, size_t len)
+{
+	int ret = mipi_dbi_command_write(mipi_dev, &dbi_cfg, cmd, data, len);
+	mipi_dbi_release(mipi_dev, &dbi_cfg);
+	if (ret) {
+		LOG_ERR("4gray cmd 0x%02x failed: %d", cmd, ret);
+	}
+	return ret;
+}
+
+/* --- 4-gray public API -------------------------------------------------- */
+
+int epaper_4gray_init(void)
+{
+	if (!mipi_dev || !device_is_ready(mipi_dev)) {
+		return -ENODEV;
+	}
+
+	static const uint8_t pwr[]  = {0x07, 0x07, 0x3F, 0x3F, 0x09};
+	static const uint8_t btst[] = {0x27, 0x27, 0x18, 0x17};
+
+	if (epaper_4gray_cmd(0x01, pwr,  sizeof(pwr)))   return -EIO;  /* PWR  */
+	if (epaper_4gray_cmd(0x06, btst, sizeof(btst)))  return -EIO;  /* BTST */
+	if (epaper_4gray_cmd(0x00, (uint8_t[]){0x1F}, 1)) return -EIO; /* PSR: KW, OTP */
+	if (epaper_4gray_cmd(0x50, (uint8_t[]){0x10, 0x07}, 2)) return -EIO; /* CDI */
+
+	if (epaper_4gray_cmd(0x04, NULL, 0)) return -EIO; /* PON */
+	k_msleep(100);
+	epaper_4gray_busy_wait();
+
+	if (epaper_4gray_cmd(0xE0, (uint8_t[]){0x02}, 1)) return -EIO; /* CCSET: TSFIX=1 */
+	if (epaper_4gray_cmd(0xE5, (uint8_t[]){0x5F}, 1)) return -EIO; /* TSSET: 4-gray OTP table */
+
+	LOG_INF("4-gray init complete");
+	return 0;
+}
+
+int epaper_4gray_refresh(const uint8_t *dtm1, const uint8_t *dtm2, size_t plane_len)
+{
+	if (!mipi_dev) return -ENODEV;
+
+	if (epaper_4gray_cmd(0x10, dtm1, plane_len)) return -EIO; /* DTM1 plane */
+	if (epaper_4gray_cmd(0x13, dtm2, plane_len)) return -EIO; /* DTM2 plane */
+
+	if (epaper_4gray_cmd(0x04, NULL, 0)) return -EIO; /* PON */
+	epaper_4gray_busy_wait();
+
+	if (epaper_4gray_cmd(0x12, NULL, 0)) return -EIO; /* DRF */
+	k_msleep(100);
+	epaper_4gray_busy_wait();
+
+	if (epaper_4gray_cmd(0x02, NULL, 0)) return -EIO; /* POF */
+	epaper_4gray_busy_wait();
+
+	LOG_INF("4-gray refresh complete");
+	return 0;
 }

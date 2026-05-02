@@ -36,6 +36,68 @@ static void on_draw(pngle_t *pngle, uint32_t x, uint32_t y,
 	}
 }
 
+struct decode_4gray_ctx {
+	uint8_t *dtm1;
+	uint8_t *dtm2;
+	int width;
+	int height;
+};
+
+static void on_draw_4gray(pngle_t *pngle, uint32_t x, uint32_t y,
+                           uint32_t w, uint32_t h, const uint8_t rgba[4])
+{
+	struct decode_4gray_ctx *ctx = pngle_get_user_data(pngle);
+
+	if ((int)x >= ctx->width || (int)y >= ctx->height) return;
+
+	uint8_t lum = rgba[0];  /* "L" mode PNG: R=G=B=lum */
+
+	/* 1 in DTM1 = black direction (inverted from intuition) */
+	uint8_t b1, b0;
+	if      (lum >= 192) { b1 = 0; b0 = 0; }  /* white      */
+	else if (lum >= 128) { b1 = 1; b0 = 0; }  /* light gray */
+	else if (lum >=  64) { b1 = 0; b0 = 1; }  /* dark gray  */
+	else                 { b1 = 1; b0 = 1; }  /* black      */
+
+	int pixel_idx = (int)y * ctx->width + (int)x;
+	int byte_idx  = pixel_idx / 8;
+	int bit_pos   = 7 - (pixel_idx % 8);
+
+	if (b1) ctx->dtm1[byte_idx] |=  (1u << bit_pos);
+	else    ctx->dtm1[byte_idx] &= ~(1u << bit_pos);
+	if (b0) ctx->dtm2[byte_idx] |=  (1u << bit_pos);
+	else    ctx->dtm2[byte_idx] &= ~(1u << bit_pos);
+}
+
+int png_decode_4gray(const uint8_t *png_data, size_t png_len,
+                     uint8_t *dtm1, uint8_t *dtm2,
+                     int fb_width, int fb_height)
+{
+	size_t plane_bytes = (fb_width * fb_height + 7) / 8;
+	memset(dtm1, 0, plane_bytes);
+	memset(dtm2, 0, plane_bytes);
+
+	pngle_t *pngle = pngle_new();
+	if (!pngle) {
+		LOG_ERR("pngle_new failed");
+		return -1;
+	}
+
+	struct decode_4gray_ctx ctx = {
+		.dtm1 = dtm1, .dtm2 = dtm2, .width = fb_width, .height = fb_height,
+	};
+	pngle_set_user_data(pngle, &ctx);
+	pngle_set_draw_callback(pngle, on_draw_4gray);
+
+	int ret = pngle_feed(pngle, png_data, png_len);
+	pngle_destroy(pngle);
+	if (ret < 0) {
+		LOG_ERR("pngle_feed error (4gray): %d", ret);
+		return -1;
+	}
+	return 0;
+}
+
 int png_decode(const uint8_t *png_data, size_t png_len,
                uint8_t *fb, int fb_width, int fb_height)
 {
