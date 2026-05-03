@@ -54,6 +54,16 @@ async def _select_quote():
         state.source_statuses["quote"] = f"error: {e}"
 
 
+async def _fetch_moonphase():
+    from sources.moonphase import get_moonphase
+    try:
+        state.moon_phase = get_moonphase()
+        state.source_statuses["moon"] = "ok"
+    except Exception as e:
+        log.error("Moon phase fetch failed: %s", e)
+        state.source_statuses["moon"] = f"error: {e}"
+
+
 async def _morning_fetch():
     """Run all source fetches concurrently, then re-render."""
     await asyncio.gather(
@@ -61,6 +71,7 @@ async def _morning_fetch():
         _fetch_calendar(),
         _fetch_stocks(),
         _select_quote(),
+        _fetch_moonphase(),
     )
     await state.do_render()
 

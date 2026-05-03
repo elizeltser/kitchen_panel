@@ -78,6 +78,7 @@ _FETCHERS = {
     "calendar": "scheduler._fetch_calendar",
     "stocks":   "scheduler._fetch_stocks",
     "quote":    "scheduler._select_quote",
+    "moon":     "scheduler._fetch_moonphase",
 }
 
 

@@ -9,6 +9,12 @@ from admin.routes import router as admin_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from sources.moonphase import get_moonphase
+    try:
+        state.moon_phase = get_moonphase()
+        state.source_statuses["moon"] = "ok"
+    except Exception:
+        pass
     await state.do_render()
     start_scheduler()
     yield

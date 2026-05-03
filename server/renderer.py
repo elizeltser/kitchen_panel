@@ -10,6 +10,7 @@ Zone layout (pixels):
 """
 import hashlib
 import io
+import math
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -91,48 +92,102 @@ def draw_quote_strip(draw, quote: Optional[dict], scale: int = 1):
     fq = _font("PlayfairDisplay-Italic.ttf", 25 * s)
     fa = _font("Inter-Regular.ttf", 14 * s)
 
-    lines = _wrap(draw, fq, quote["quote"], (W - 20) * s, max_lines=2)
-    y = 5 * s
-    lh = 27 * s
+    lines = _wrap(draw, fq, quote["quote"], (W - 40) * s, max_lines=2)
+    y = 4 * s
+    lh = 24 * s
     for line in lines:
         draw.text((10 * s, y), line, font=fq, fill=BLACK)
         y += lh
 
     attribution = f"\u2014 {quote['attribution']}"
-    attr_y = 6 * s + (len(lines) - 1) * lh + 2 * s
-    _right(draw, fa, attribution, (W - 10) * s, attr_y)
+    _right(draw, fa, attribution, (W - 10) * s, y + 2 * s)
 
 
-def draw_weather_zone(draw, weather: Optional[dict], scale: int = 1):
+def _draw_moon_disc(draw, cx: float, cy: float, r: float, phase: float, scale: int = 1):
+    """
+    Draw moon phase disc. All coords in pre-scale pixels.
+    phase: 0.0 = new moon, 0.5 = full moon, 1.0 = new moon again.
+
+    Uses a two-shape composite: a right or left illuminated semicircle plus an
+    ellipse that either subtracts (crescent) or adds (gibbous) illumination.
+    """
+    s = scale
+    cx, cy, r = int(cx * s), int(cy * s), int(r * s)
+    if r < 1:
+        return
+
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BLACK)
+
+    if phase < 0.5:
+        f = phase / 0.5  # 0 → 1 as new → full
+        draw.pieslice([cx - r, cy - r, cx + r, cy + r], -90, 90, fill=WHITE)
+        if f < 0.5:  # waxing crescent
+            a = int(r * (1 - 2 * f))
+            if a > 0:
+                draw.ellipse([cx - a, cy - r, cx + a, cy + r], fill=BLACK)
+        elif f > 0.5:  # waxing gibbous
+            a = int(r * (2 * f - 1))
+            if a > 0:
+                draw.ellipse([cx - a, cy - r, cx + a, cy + r], fill=WHITE)
+    elif phase > 0.5:
+        f = (phase - 0.5) / 0.5  # 0 → 1 as full → new
+        draw.pieslice([cx - r, cy - r, cx + r, cy + r], 90, 270, fill=WHITE)
+        if f < 0.5:  # waning gibbous
+            a = int(r * (1 - 2 * f))
+            if a > 0:
+                draw.ellipse([cx - a, cy - r, cx + a, cy + r], fill=WHITE)
+        elif f > 0.5:  # waning crescent
+            a = int(r * (2 * f - 1))
+            if a > 0:
+                draw.ellipse([cx - a, cy - r, cx + a, cy + r], fill=BLACK)
+    else:
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=WHITE)
+
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=BLACK, width=scale)
+
+
+def draw_weather_zone(draw, weather: Optional[dict], moon_phase: Optional[float] = None, scale: int = 1):
     s = scale
     cx = (WEATHER_W // 2) * s
     if not weather:
         _center(draw, _font("Inter-Regular.ttf", 20 * s), "\u2014", cx, (CONTENT_Y + 155) * s)
-        return
+    else:
+        y = (CONTENT_Y + 16) * s
+        fi = _font("NerdFontsSymbolsOnly-Regular.ttf", 72 * s)
+        fd = _font("Inter-Regular.ttf", 25 * s)
+        ft = _font("Montserrat-Bold.ttf", 35 * s)
+        fr = _font("Inter-Regular.ttf", 20 * s)
 
-    y = (CONTENT_Y + 16) * s
-    fi = _font("NerdFontsSymbolsOnly-Regular.ttf", 72 * s)
-    fd = _font("Inter-Regular.ttf", 25 * s)
-    ft = _font("Inter-Bold.ttf", 35 * s)
-    fr = _font("Inter-Regular.ttf", 20 * s)
+        icon = weather.get("icon", "")
+        if icon:
+            _center(draw, fi, icon, cx, y + 26 * s)
+            y += 80 * s
 
-    icon = weather.get("icon", "")
-    if icon:
-        _center(draw, fi, icon, cx, y + 26 * s)
-        y += 80 * s
+        _center(draw, fd, weather.get("description", ""), cx, y)
+        y += 40 * s
 
-    _center(draw, fd, weather.get("description", ""), cx, y)
-    y += 40 * s
+        tmax = weather.get("temp_max")
+        tmin = weather.get("temp_min")
+        if tmax is not None and tmin is not None:
+            _center(draw, ft, f"\u2191{tmax:.0f}\u00b0  \u2193{tmin:.0f}\u00b0", cx, y)
+            y += 40 * s
 
-    tmax = weather.get("temp_max")
-    tmin = weather.get("temp_min")
-    if tmax is not None and tmin is not None:
-        _center(draw, ft, f"\u2191{tmax:.0f}\u00b0  \u2193{tmin:.0f}\u00b0", cx, y)
-        y += 45 * s
+        rain = weather.get("rain_pct")
+        if rain is not None:
+            _center(draw, fr, f"Rain {rain:.0f}%", cx, y)
 
-    rain = weather.get("rain_pct")
-    if rain is not None:
-        _center(draw, fr, f"Rain {rain:.0f}%", cx, y)
+    # Moon phase disc \u2014 drawn regardless of weather data availability.
+    # Horizontal: phase 0 (new) near left edge \u2192 phase 0.5 (full) at centre \u2192
+    #             phase 1 (new again) near right edge.
+    # Size: bell curve (sin) \u2014 largest at full moon, smallest at new.
+    if moon_phase is not None:
+        R_MIN, R_MAX = 8, 34
+        r = R_MIN + (R_MAX - R_MIN) * math.sin(moon_phase * math.pi)
+        # cx range 15\u2013205 keeps disc inside the 220 px weather column at all sizes
+        moon_cx = 15 + moon_phase * 190
+        # Vertically centred in the gap between rain text (~y=256) and stocks line (y=380)
+        moon_cy = 318
+        _draw_moon_disc(draw, moon_cx, moon_cy, r, moon_phase, scale=s)
 
 
 def draw_clock_zone(draw, has_birthdays: bool, scale: int = 1):
@@ -186,7 +241,7 @@ def draw_stocks_zone(draw, stocks: Optional[dict], scale: int = 1):
         _center(draw, fs, summary, (W // 2) * s, (STOCKS_Y + 68) * s)
 
 
-def compose(weather=None, birthdays=None, stocks=None, quote=None) -> tuple:
+def compose(weather=None, birthdays=None, stocks=None, quote=None, moon_phase=None) -> tuple:
     """Render full 800×480 dashboard. Returns (png_bytes, md5_etag)."""
     if birthdays is None:
         birthdays = []
@@ -198,7 +253,7 @@ def compose(weather=None, birthdays=None, stocks=None, quote=None) -> tuple:
     has_bdays = len(birthdays) > 0
 
     draw_quote_strip(draw, quote, scale=S)
-    draw_weather_zone(draw, weather, scale=S)
+    draw_weather_zone(draw, weather, moon_phase=moon_phase, scale=S)
     draw_clock_zone(draw, has_bdays, scale=S)
     if has_bdays:
         draw_birthday_zone(draw, birthdays, scale=S)

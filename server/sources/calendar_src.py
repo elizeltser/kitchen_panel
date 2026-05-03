@@ -1,5 +1,5 @@
 """
-Google Calendar — fetch today's birthday events.
+Google Calendar — fetch birthday events.
 
 One-time OAuth setup (run from server/ directory):
   python -c "from sources.calendar_src import authorize; authorize()"
@@ -23,6 +23,9 @@ SECRETS = Path(__file__).parent.parent / "secrets"
 CREDS_FILE = SECRETS / "credentials.json"
 TOKEN_FILE = SECRETS / "token.json"
 TZ = ZoneInfo("Asia/Jerusalem")
+
+# How far ahead to scan for upcoming-birthday reminders (days).
+LOOKAHEAD_DAYS = 7
 
 
 def _get_creds() -> Credentials:
@@ -55,7 +58,16 @@ def authorize():
 
 
 async def get_birthdays_today() -> list:
-    """Return list of birthday names for today. Returns [] on error or no events."""
+    """
+    Return reminder strings for birthday events.
+
+    Queries the next LOOKAHEAD_DAYS days. Events that are today are always
+    included. Events that are N days away are included only when they have a
+    reminder override whose advance notice (in days) matches N — i.e. the
+    reminder fires today.
+
+    Returns [] on auth error or no matching events.
+    """
     try:
         creds = _get_creds()
     except Exception as e:
@@ -63,8 +75,8 @@ async def get_birthdays_today() -> list:
         return []
 
     now_local = datetime.now(TZ)
-    day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_end = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
+    today = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_end = today + timedelta(days=LOOKAHEAD_DAYS)
 
     def _fetch():
         svc = build("calendar", "v3", credentials=creds)
@@ -72,21 +84,36 @@ async def get_birthdays_today() -> list:
             svc.events()
             .list(
                 calendarId="primary",
-                timeMin=day_start.isoformat(),
-                timeMax=day_end.isoformat(),
+                timeMin=today.isoformat(),
+                timeMax=window_end.isoformat(),
                 singleEvents=True,
                 orderBy="startTime",
-                maxResults=3,
+                maxResults=20,
             )
             .execute()
         )
-        names = []
+        reminders = []
         for ev in result.get("items", []):
-            start = ev.get("start", {})
-            # All-day events have "date" key, not "dateTime"
-            if "date" in start and "dateTime" not in start:
-                names.append(ev.get("summary", "Unknown"))
-        return names
+            name = ev.get("summary", "")
+            start_str = ev["start"].get("date") or ev["start"].get("dateTime", "")[:10]
+            try:
+                event_date = datetime.fromisoformat(start_str).date()
+            except ValueError:
+                continue
+
+            days_until = (event_date - today.date()).days
+
+            if days_until == 0:
+                reminders.append(f"{name} is today!")
+                continue
+
+            for rem in ev.get("reminders", {}).get("overrides", []):
+                rem_days = rem.get("minutes", 0) // 1440
+                if rem_days == days_until:
+                    label = "day" if days_until == 1 else "days"
+                    reminders.append(f"{name} is in {days_until} {label}")
+
+        return reminders
 
     try:
         return await asyncio.to_thread(_fetch)

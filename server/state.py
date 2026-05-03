@@ -15,6 +15,7 @@ weather_data: Optional[dict] = None
 calendar_data: list = []
 stock_data: Optional[dict] = None
 quote_data: Optional[dict] = None
+moon_phase: Optional[float] = None
 
 # Health
 source_statuses: dict = {
@@ -22,6 +23,7 @@ source_statuses: dict = {
     "calendar": "pending",
     "stocks": "pending",
     "quote": "pending",
+    "moon": "pending",
 }
 
 
@@ -34,5 +36,6 @@ async def do_render():
         birthdays=calendar_data,
         stocks=stock_data,
         quote=quote_data,
+        moon_phase=moon_phase,
     )
     last_render_time = datetime.now().isoformat()
