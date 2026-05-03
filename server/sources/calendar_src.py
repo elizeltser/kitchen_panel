@@ -76,7 +76,7 @@ async def get_birthdays_today() -> list:
                 timeMax=day_end.isoformat(),
                 singleEvents=True,
                 orderBy="startTime",
-                maxResults=6,
+                maxResults=3,
             )
             .execute()
         )
