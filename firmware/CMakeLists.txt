@@ -12,6 +12,8 @@ target_sources(app PRIVATE
   src/epaper.c
   src/schedule.c
   src/button.c
+  src/nvs_store.c
+  src/screensaver.c
   lib/pngle/pngle.c
   lib/pngle/miniz.c
 )

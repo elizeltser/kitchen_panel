@@ -2,17 +2,18 @@
 Pillow-based renderer — composes the 800×480 1-bit PNG from live data.
 
 Zone layout (pixels):
-  Quote:     x=0,   y=0,   w=800, h=70
-  Weather:   x=0,   y=70,  w=220, h=310
-  Clock:     x=220, y=70,  w=580, h=220  (h=310 when no birthdays)
-  Birthdays: x=220, y=290, w=580, h=90   (omitted when empty)
-  Stocks:    x=0,   y=380, w=800, h=100
+  Quote:     x=0,   y=0,   w=800, h=90
+  Weather:   x=0,   y=90,  w=200, h=390
+  Clock:     x=200, y=90,  w=600, h=260  (h=390 when no reminders)
+  Reminders: x=200, y=350, w=600, h=130  (omitted when empty)
+  (Stocks zone removed from rendering; backend data still fetched)
 """
 import hashlib
 import io
 import math
+import re
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -26,15 +27,15 @@ W, H = 800, 480
 BLACK, WHITE = 0, 255
 SCALE = 2  # supersample factor — render at 2× then downsample with LANCZOS
 
-QUOTE_H = 70
-CONTENT_Y = 70
-WEATHER_W = 220
-CLOCK_X = 220
-CLOCK_W = 580
-BDAY_Y = 290
-BDAY_H = 90
-STOCKS_Y = 380
-STOCKS_H = 100
+QUOTE_H = 90
+CONTENT_Y = 90
+WEATHER_W = 200
+CLOCK_X = 200
+CLOCK_W = 600
+BDAY_Y = 350
+BDAY_H = 130
+STOCKS_Y = H   # kept for backend; not rendered
+STOCKS_H = 80  # kept for backend; not rendered
 
 
 def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
@@ -78,8 +79,7 @@ def _wrap(draw, font, text, max_width, max_lines=2) -> list:
 def draw_dividers(draw, has_birthdays: bool, scale: int = 1):
     s = scale
     draw.line([(0, CONTENT_Y * s), (W * s, CONTENT_Y * s)], fill=BLACK, width=s)
-    draw.line([(0, STOCKS_Y * s), (W * s, STOCKS_Y * s)], fill=BLACK, width=s)
-    draw.line([(CLOCK_X * s, CONTENT_Y * s), (CLOCK_X * s, STOCKS_Y * s)], fill=BLACK, width=s)
+    draw.line([(CLOCK_X * s, CONTENT_Y * s), (CLOCK_X * s, H * s)], fill=BLACK, width=s)
     if has_birthdays:
         draw.line([(CLOCK_X * s, BDAY_Y * s), (W * s, BDAY_Y * s)], fill=BLACK, width=s)
 
@@ -100,7 +100,7 @@ def draw_quote_strip(draw, quote: Optional[dict], scale: int = 1):
         y += lh
 
     attribution = f"\u2014 {quote['attribution']}"
-    _right(draw, fa, attribution, (W - 10) * s, y + 2 * s)
+    _right(draw, fa, attribution, (W - 10) * s, y + 14 * s)
 
 
 def _draw_moon_disc(draw, cx: float, cy: float, r: float, phase: float, scale: int = 1):
@@ -150,12 +150,12 @@ def draw_weather_zone(draw, weather: Optional[dict], moon_phase: Optional[float]
     s = scale
     cx = (WEATHER_W // 2) * s
     if not weather:
-        _center(draw, _font("Inter-Regular.ttf", 20 * s), "\u2014", cx, (CONTENT_Y + 155) * s)
+        _center(draw, _font("Inter-Regular.ttf", 20 * s), "\u2014", cx, (CONTENT_Y + 195) * s)
     else:
-        y = (CONTENT_Y + 16) * s
+        y = (CONTENT_Y + 50) * s
         fi = _font("NerdFontsSymbolsOnly-Regular.ttf", 72 * s)
-        fd = _font("Inter-Regular.ttf", 25 * s)
-        ft = _font("Montserrat-Bold.ttf", 35 * s)
+        fd = _font("Inter-Regular.ttf", 22 * s)
+        ft = _font("Montserrat-Bold.ttf", 30 * s)
         fr = _font("Inter-Regular.ttf", 20 * s)
 
         icon = weather.get("icon", "")
@@ -164,48 +164,121 @@ def draw_weather_zone(draw, weather: Optional[dict], moon_phase: Optional[float]
             y += 80 * s
 
         _center(draw, fd, weather.get("description", ""), cx, y)
-        y += 40 * s
+        y += 38 * s
 
         tmax = weather.get("temp_max")
         tmin = weather.get("temp_min")
         if tmax is not None and tmin is not None:
             _center(draw, ft, f"\u2191{tmax:.0f}\u00b0  \u2193{tmin:.0f}\u00b0", cx, y)
-            y += 40 * s
+            y += 38 * s
 
         rain = weather.get("rain_pct")
         if rain is not None:
             _center(draw, fr, f"Rain {rain:.0f}%", cx, y)
 
     # Moon phase disc \u2014 drawn regardless of weather data availability.
-    # Horizontal: phase 0 (new) near left edge \u2192 phase 0.5 (full) at centre \u2192
-    #             phase 1 (new again) near right edge.
+    # Horizontal: phase 0 (new) near left \u2192 phase 0.5 (full) at centre \u2192
+    #             phase 1 (new again) near right. Stays within weather column.
     # Size: bell curve (sin) \u2014 largest at full moon, smallest at new.
     if moon_phase is not None:
         R_MIN, R_MAX = 8, 34
         r = R_MIN + (R_MAX - R_MIN) * math.sin(moon_phase * math.pi)
-        # cx range 15\u2013205 keeps disc inside the 220 px weather column at all sizes
-        moon_cx = 15 + moon_phase * 190
-        # Vertically centred in the gap between rain text (~y=256) and stocks line (y=380)
-        moon_cy = 318
+        moon_cx = R_MAX + moon_phase * (WEATHER_W - 2 * R_MAX)
+        # Vertically centred in the lower portion of the weather zone
+        moon_cy = 420
         _draw_moon_disc(draw, moon_cx, moon_cy, r, moon_phase, scale=s)
 
 
 def draw_clock_zone(draw, has_birthdays: bool, scale: int = 1):
     s = scale
-    now = datetime.now(TZ)
+    now = datetime.now(TZ) + timedelta(minutes=1)
     time_str = f"{now.hour}:{now.minute:02d}"
     date_str = now.strftime("%A, %B %-d")
 
-    ft = _font("Montserrat-Regular.ttf", 134 * s)
-    fd = _font("Montserrat-Regular.ttf", 30 * s)
+    ft = _font("Montserrat-Regular.ttf", 148 * s)
+    fd = _font("Montserrat-Regular.ttf", 32 * s)
 
-    clock_bottom = BDAY_Y if has_birthdays else STOCKS_Y
+    clock_bottom = BDAY_Y if has_birthdays else H
     clock_h = clock_bottom - CONTENT_Y
     cx = (CLOCK_X + CLOCK_W // 2) * s
     mid_y = (CONTENT_Y + clock_h // 2) * s
 
-    _center(draw, ft, time_str, cx, mid_y - 22 * s)
-    _center(draw, fd, date_str, cx, mid_y + 78 * s)
+    _center(draw, ft, time_str, cx, mid_y - 20 * s)
+    _center(draw, fd, date_str, cx, mid_y + 88 * s)
+
+
+def _parse_birthday_event(event_str: str) -> tuple:
+    """
+    Parse a calendar event string (from calendar_src.py) into (display_text, is_birthday).
+
+    Strings arrive as e.g. "Alice's Birthday is today!" or "Bob's Birthday is in 3 days".
+    For birthday events: extracts person name and reformats cleanly.
+    For other events: strips the timing suffix and returns the plain event name.
+    """
+    is_birthday = bool(re.search(r"birthday", event_str, re.IGNORECASE))
+
+    today_match = re.search(r" is today!?$", event_str, re.IGNORECASE)
+    future_match = re.search(r" is in (\d+) days?$", event_str, re.IGNORECASE)
+
+    if is_birthday:
+        bday_match = re.search(r"^(.*?)(?:'s?\s+)?birthday", event_str, re.IGNORECASE)
+        if bday_match:
+            person = re.sub(r"'s?$", "", bday_match.group(1).strip()).strip()
+        else:
+            person = ""
+
+        if today_match:
+            timing = "today"
+        elif future_match:
+            n = future_match.group(1)
+            timing = f"in {n} {'day' if n == '1' else 'days'}"
+        else:
+            timing = "soon"
+
+        if person:
+            return f"{person}'s birthday is {timing}", True
+
+        # Fallback: no name could be extracted
+        raw = event_str[:today_match.start()] if today_match else (
+              event_str[:future_match.start()] if future_match else event_str)
+        return f"{raw} is {timing}", True
+    else:
+        if today_match:
+            return event_str[:today_match.start()], False
+        if future_match:
+            return event_str[:future_match.start()], False
+        return event_str, False
+
+
+def _draw_icon_and_text(draw, icon_font, text_font, icon_char: str, text: str,
+                        cx: int, cy: int, scale: int = 1):
+    """
+    Draw an optional icon and text string centered together on (cx, cy).
+    All coordinates are in scaled space (already multiplied by scale factor).
+    If icon_char is empty, only the text is drawn.
+    """
+    GAP = 6 * scale
+
+    text_bb = draw.textbbox((0, 0), text, font=text_font)
+    text_w = text_bb[2] - text_bb[0]
+
+    if icon_char:
+        icon_bb = draw.textbbox((0, 0), icon_char, font=icon_font)
+        icon_w = icon_bb[2] - icon_bb[0]
+        total_w = icon_w + GAP + text_w
+        left = cx - total_w // 2
+
+        icon_x = left - icon_bb[0]
+        icon_y = cy - (icon_bb[1] + icon_bb[3]) // 2
+        draw.text((icon_x, icon_y), icon_char, font=icon_font, fill=BLACK)
+
+        text_x = left + icon_w + GAP - text_bb[0]
+        text_y = cy - (text_bb[1] + text_bb[3]) // 2
+        draw.text((text_x, text_y), text, font=text_font, fill=BLACK)
+    else:
+        text_x = cx - (text_bb[0] + text_bb[2]) // 2
+        text_y = cy - (text_bb[1] + text_bb[3]) // 2
+        draw.text((text_x, text_y), text, font=text_font, fill=BLACK)
 
 
 def draw_birthday_zone(draw, birthdays: list, scale: int = 1):
@@ -213,11 +286,17 @@ def draw_birthday_zone(draw, birthdays: list, scale: int = 1):
         return
     s = scale
     f = _font("Inter-Medium.ttf", 20 * s)
+    fi = _font("NerdFontsSymbolsOnly-Regular.ttf", 20 * s)
+    CAKE = ""  # NerdFonts fa-birthday-cake (U+F1FD)
+
     total = min(len(birthdays), 3)
     start_y = (BDAY_Y + (BDAY_H - total * 28) // 2) * s
     cx = (CLOCK_X + CLOCK_W // 2) * s
-    for i, name in enumerate(birthdays[:3]):
-        _center(draw, f, f"\U0001f382 {name}", cx, start_y + i * 28 * s + 10 * s)
+    for i, event_str in enumerate(birthdays[:3]):
+        display_text, is_birthday = _parse_birthday_event(event_str)
+        icon_char = CAKE if is_birthday else ""
+        _draw_icon_and_text(draw, fi, f, icon_char, display_text,
+                            cx, start_y + i * 28 * s + 10 * s, scale=s)
 
 
 def draw_stocks_zone(draw, stocks: Optional[dict], scale: int = 1):
@@ -257,7 +336,6 @@ def compose(weather=None, birthdays=None, stocks=None, quote=None, moon_phase=No
     draw_clock_zone(draw, has_bdays, scale=S)
     if has_bdays:
         draw_birthday_zone(draw, birthdays, scale=S)
-    draw_stocks_zone(draw, stocks, scale=S)
     draw_dividers(draw, has_bdays, scale=S)
 
     img_small = img.resize((W, H), Image.LANCZOS)

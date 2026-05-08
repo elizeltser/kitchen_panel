@@ -46,6 +46,16 @@
 #define LED_PIN              6   /* active LOW */
 #define BUZZER_PIN           45
 
+/* ── Display geometry ───────────────────────────────────────── */
+#define DISPLAY_WIDTH        800
+#define DISPLAY_HEIGHT       480
+#define FB_PLANE_SIZE        (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8)  /* 48000 bytes */
+#define PNG_BUF_SIZE         (512 * 1024)
+
+/* ── Screensaver ─────────────────────────────────────────────── */
+#define SCREENSAVER_CYCLE_MS    30000   /* auto-advance every 30 s */
+#define SCREENSAVER_ACTIVE_MS   300000  /* exit after 5 min */
+
 /* ── ePaper SPI (hardware fixed — do not change) ────────────── */
 #define EPAPER_CLK_PIN       7
 #define EPAPER_MOSI_PIN      9

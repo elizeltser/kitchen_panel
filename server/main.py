@@ -1,10 +1,14 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 
 import state
 from scheduler import start_scheduler, stop_scheduler
 from admin.routes import router as admin_router
+
+SCREENSAVERS_DIR = Path(__file__).parent / "data" / "screensavers"
 
 
 @asynccontextmanager
@@ -50,3 +54,32 @@ async def get_status():
 async def force_refresh():
     await state.do_render()
     return {"status": "ok", "etag": state.etag}
+
+
+@app.get("/display/{n}")
+async def display_n(n: int, request: Request):
+    if n != 0:
+        raise HTTPException(status_code=404, detail="Buffer not found")
+    if_none_match = request.headers.get("if-none-match", "")
+    if if_none_match == state.etag and state.etag:
+        return Response(status_code=304)
+    return Response(
+        content=state.png_bytes,
+        media_type="image/png",
+        headers={"ETag": state.etag, "Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/screensaver/count")
+async def screensaver_count():
+    SCREENSAVERS_DIR.mkdir(parents=True, exist_ok=True)
+    count = len(sorted(SCREENSAVERS_DIR.glob("*.png")))
+    return {"count": count}
+
+
+@app.get("/screensaver/{n}")
+async def get_screensaver(n: int):
+    path = SCREENSAVERS_DIR / f"{n}.png"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Screensaver not found")
+    return FileResponse(str(path), media_type="image/png")

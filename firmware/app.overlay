@@ -1,7 +1,8 @@
 /*
- * No overrides needed — the board DTS already defines:
- *   zephyr,display = &epd_uc8179  (UC8179 800x480 ePaper on SPI2)
- *   buttons: refresh_key0 (GPIO3), left_key1 (GPIO4), right_key2 (GPIO5)
- *   green_led0 (GPIO6, active-low)
- *   pcf8563_rtc, wifi, uart0
+ * Mark gpio0 as a wakeup-source device so the Zephyr ESP32 GPIO driver
+ * will call esp_sleep_enable_ext1_wakeup_io() for any pin configured with
+ * GPIO_INT_TRIG_WAKE_LOW, enabling GPIO wakeup from deep sleep.
  */
+&gpio0 {
+	wakeup-source;
+};
