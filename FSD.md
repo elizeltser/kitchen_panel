@@ -1,6 +1,6 @@
 # Functional Specification: ePaper Smart Dashboard System
-**Document version:** 0.5 — Draft  
-**Last updated:** 1.5.2026  
+**Document version:** 0.6 — Draft  
+**Last updated:** 9.5.2026  
 **Author:** Eli Zeltser  
 **Status:** In Progress
 
@@ -19,6 +19,7 @@
    - 6.3 [Weather](#63-weather)
    - 6.4 [Clock & Date](#64-clock--date)
    - 6.5 [Quote of the Day](#65-quote-of-the-day)
+   - 6.6 [Moon Phase](#66-moon-phase)
 7. [Firmware Specification (E1001)](#7-firmware-specification-e1001)
 8. [Server Software Specification](#8-server-software-specification)
 9. [Management UI — Admin Panel](#9-management-ui--admin-panel)
@@ -34,7 +35,7 @@
 
 ### 1.1 Purpose
 
-This document describes the functional requirements of a personal smart dashboard built on a **Seeed Studio reTerminal E1001** 7.5-inch monochrome ePaper display. The system provides an at-a-glance view of time, weather, birthday reminders, stock portfolio status, and a daily quote during defined morning and evening periods. All dashboard content and configuration is manageable via a local web admin panel.
+This document describes the functional requirements of a personal smart dashboard built on a **Seeed Studio reTerminal E1001** 7.5-inch monochrome ePaper display. The system provides an at-a-glance view of time, weather, birthday reminders, moon phase, and a daily quote during defined morning and evening periods. All dashboard content and configuration is manageable via a local web admin panel.
 
 ### 1.2 Goals
 
@@ -44,12 +45,13 @@ This document describes the functional requirements of a personal smart dashboar
 - Provide a local admin panel to manage quotes, stock watchlist, and portfolio without editing files manually.
 - Enable future extension of data sources without reflashing the device.
 - Provide a pleasant shared morning and evening experience for the household.
+- Display a screensaver during inactive hours to prevent burn-in and provide ambient visual interest.
 
 ### 1.3 Non-Goals
 
 - This is not a real-time trading terminal. Stock data is informational only and not financial advice.
-- The display is not interactive beyond the green button manual refresh (v1).
-- The system does not need to function when the laptop server is off or unreachable.
+- The display is not interactive beyond the hardware buttons (v1).
+- The system does not need to function when the server is off or unreachable.
 - No Claude API key is used in this version — all AI features are deferred to a future version.
 
 ### 1.4 Intended Users
@@ -62,13 +64,12 @@ This project will be used specifically for our home, as a display for us to view
 
 ### 2.1 High-Level Overview
 
-The system follows a **server-rendered pull model**. The laptop serves as the intelligence layer; the E1001 is a dumb display that polls for a pre-rendered image.
+The system follows a **server-rendered pull model**. The Arch Linux laptop serves as the intelligence layer; the E1001 is a dumb display that polls for a pre-rendered image.
 
 ```
 ┌──────────────────────────────────────────────┐
-│    Asus A554I Laptop (Server)                │
-│    Windows 10 — Ethernet — 10.100.102.216    │
-│    hostname: DESKTOP-NJR6V52                 │
+│    Arch Linux Laptop (Server)                │
+│    Home LAN — SERVER_HOST in config.h        │
 │                                              │
 │  ┌──────────────┐   ┌─────────────────────┐  │
 │  │ Data Fetcher │──►│ Image Renderer      │  │
@@ -77,17 +78,16 @@ The system follows a **server-rendered pull model**. The laptop serves as the in
 │   Google Calendar            │               │
 │   Polygon.io          FastAPI HTTP :8080      │
 │   Open-Meteo                 │               │
-│                       ┌──────┴──────┐        │
+│   ephem (moon)        ┌──────┴──────┐        │
 │                       │ Admin Panel │        │
 │  ┌────────────────┐   │ (Web UI)    │        │
 │  │ portfolio.json │   └─────────────┘        │
 │  │ quotes.json    │                          │
 │  │ tickers.json   │                          │
+│  │ screensavers/  │                          │
 │  └────────────────┘                          │
 └──────────────────────────────│───────────────┘
                                │  Home LAN (router 10.100.102.1)
-                               │  Laptop:  Ethernet, DHCP-reserved IP
-                               │  E1001:   Wi-Fi 2.4GHz
                                │  HTTP GET /display.png
                                ▼
                    ┌───────────────────────┐
@@ -104,49 +104,37 @@ The system follows a **server-rendered pull model**. The laptop serves as the in
 ### 2.2 Data Flow
 
 ```
-Every render cycle (laptop side):
-  1. Fetch fresh data from all sources (calendar, weather, stocks)
+Every render cycle (server side):
+  1. Fetch fresh data from all sources (calendar, weather, stocks, moon)
   2. Load portfolio from portfolio.json — compute P&L summary
   3. Select today's quote from quotes.json (random, date-seeded)
-  4. Composite all data into an 800×480 1-bit PNG
+  4. Composite all data into an 800×480 grayscale PNG (2× supersampled)
   5. Cache PNG with a new ETag if content changed
   6. Serve via HTTP
 
 Every poll cycle (E1001 side):
   1. Wake from PM sleep (timer or GPIO button)
   2. Connect to Wi-Fi
-  3. GET /display.png with If-None-Match: <last_etag>
-  4. If 304 → skip display update, go back to sleep
-  5. If 200 → decode PNG, choose refresh mode, update display
-  6. Store new ETag in NVS settings
-  7. Compute sleep duration until next poll
-  8. Enter PM sleep
+  3. Determine mode from local time
+  4. If active window: GET /display.png with If-None-Match: <last_etag>
+     If 304 → skip display update, go back to sleep
+     If 200 → decode PNG, refresh display, store new ETag in NVS
+  5. If inactive, timer wake: GET /screensaver/{random_index} → display screensaver
+  6. If inactive, button wake: show requested display buffer for 60s
+  7. If NTP sync time (0:00): clock already updated, no display action
+  8. Compute sleep duration until next scheduled event
+  9. Enter PM sleep
 ```
 
 ### 2.3 Network Topology
 
-The laptop's IP is **reserved via DHCP in the router** (`10.100.102.216`). No Windows-side static IP configuration is needed — the router always assigns the same IP to the laptop's Ethernet adapter based on its MAC address.
-
-**Verify the reservation is working:**
-```powershell
-# Should show 10.100.102.216 under Ethernet adapter
-ipconfig
-
-# After starting the server, confirm it's listening:
-netstat -an | findstr "8080"
-```
-
-The server is not exposed to the internet. As long as no port-forwarding rule exists for port 8080 in the router, all traffic is local only. Your public IP (check at `https://whatismyip.com`) will differ from `10.100.102.216`.
-
 | Item | Value |
 |---|---|
-| Laptop connection | Ethernet |
-| Laptop IP | `10.100.102.216` (DHCP-reserved — no Windows config needed) |
-| Laptop hostname | `DESKTOP-NJR6V52` |
+| Server | Arch Linux laptop |
+| Server IP | Set as `SERVER_HOST` in `firmware/src/config.h` |
 | Router gateway | `10.100.102.1` |
 | Server port | `8080` |
 | Admin panel | Same port, routes `/admin/*` |
-| E1001 IP | `10.100.102.4` (DHCP-reserved in router) |
 | External exposure | None — no port forwarding |
 
 ---
@@ -174,58 +162,32 @@ The server is not exposed to the internet. As long as no port-forwarding rule ex
 
 | Mode | Duration | Flicker | Use case |
 |---|---|---|---|
-| Full refresh | ~3s | Multiple flashes | Window start, daily maintenance, button press |
-| Fast refresh | ~1.5s | Single flash | Content change (stocks, calendar) |
-| Partial refresh | ~0.3s | None | Clock tick (time region only) |
+| Full refresh | ~3s | Multiple flashes | Window start, button press, screensaver exit |
+| Fast refresh | ~1.5s | Single flash | Content change |
+| Partial refresh | ~0.3s | None | Clock tick |
 
-### 3.2 Server — Laptop Backend
+### 3.2 Server — Arch Linux Laptop
 
 **FastAPI + Uvicorn** handles async data fetching natively (all API calls run concurrently), has built-in ETag/`304 Not Modified` support, and hosts the admin panel on the same process.
 
-**Virtual environment:** `C:\Users\Eli Zeltser\Documents\reTerminal\.venv`
-
-```powershell
-# Activate venv (required before any python/pip command)
-C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\Activate.ps1
-
-# If blocked by execution policy, run once as Administrator:
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-**NSSM Windows Service** (run once, after development is working):
-```powershell
-$venvPython = "C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\python.exe"
-$appDir     = "C:\Users\Eli Zeltser\Documents\reTerminal\server"
-
-nssm install EpaperDashboard $venvPython "-m uvicorn main:app --host 0.0.0.0 --port 8080"
-nssm set EpaperDashboard AppDirectory $appDir
-nssm set EpaperDashboard Start SERVICE_AUTO_START
-nssm start EpaperDashboard
-
-nssm status EpaperDashboard
-nssm stop   EpaperDashboard
-nssm remove EpaperDashboard confirm
-```
-
-**Development run:**
-```powershell
-cd "C:\Users\Eli Zeltser\Documents\reTerminal\server"
-python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+**Quick start:**
+```bash
+source ~/Documents/reTerminal/.venv/bin/activate
+cd ~/Documents/reTerminal/server
+uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 | Property | Value |
 |---|---|
-| Hardware | Asus A554I |
-| OS | Windows 10 |
-| Python version | 3.12 |
+| OS | Arch Linux |
+| Python version | 3.12+ |
 | Always-on | Yes |
-| Project root | `C:\Users\Eli Zeltser\Documents\reTerminal\` |
-| Virtual environment | `C:\Users\Eli Zeltser\Documents\reTerminal\.venv` |
-| Server directory | `C:\Users\Eli Zeltser\Documents\reTerminal\server\` |
+| Project root | `~/Documents/reTerminal/` |
+| Virtual environment | `~/Documents/reTerminal/.venv` |
+| Server directory | `~/Documents/reTerminal/server/` |
 | Server framework | FastAPI + Uvicorn |
-| Image rendering | Pillow (PIL) |
+| Image rendering | Pillow (PIL), grayscale mode, 2× supersampling |
 | Admin panel | Same FastAPI process, `/admin` routes |
-| Process management | NSSM Windows Service (production) / manual venv run (development) |
 
 ### 3.3 Data Sources
 
@@ -236,12 +198,15 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 | Portfolio data | Local `portfolio.json` | None | On admin save |
 | Weather | Open-Meteo (free, no key) | None | Once daily at 05:45 |
 | Quote of the day | Local `quotes.json` | None | Daily random selection at 05:45 |
+| Moon phase | `ephem` library (local) | None | Daily at 05:45 |
 | Time / Date | E1001 system clock (NTP-synced) | N/A | Every render cycle |
+| Screensavers | Local `data/screensavers/*.png` | None | Manually managed |
 
 ### 3.4 Communication Layer
 
 - **Protocol:** HTTP/1.1 over home LAN
-- **Display image:** PNG, 1-bit (black/white), 800×480, served with ETag
+- **Display image:** PNG, 8-bit grayscale (4-level dithered), 800×480, served with ETag
+- **Screensaver images:** PNG, 8-bit grayscale (4-level dithered), 800×480, served by index
 - **Admin panel:** HTML pages on `/admin/*` routes (Jinja2 templates)
 - **Data API:** JSON endpoints on `/api/*` routes for admin interactions
 - **Security:** Local network only. No TLS in v1.
@@ -252,90 +217,84 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 
 ### 4.1 Grid Structure
 
-The footer is removed. The canvas has four zones: quote at top, weather left, clock+date+birthdays right, and stocks at the bottom. With the footer gone, both the weather and clock zones are taller.
+The canvas has four zones: quote at top, weather left (with moon phase at bottom of that column), clock+date+reminders right. Stocks are fetched but not currently rendered on screen.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐ y=0
-│  "The mystery of life isn't a problem to solve, but a reality    │ h=70
+│  "The mystery of life isn't a problem to solve, but a reality    │ h=90
 │   to experience."                      — Frank Herbert, Dune     │
-├──────────────────┬───────────────────────────────────────────────┤ y=70
-│                  │                                               │
-│  ⛅              │              07:42                            │
-│  Partly Cloudy   │                                               │ h=310
-│                  │          Wednesday, April 6                   │
-│  ↑24°  ↓14°      │                                               │
-│  Rain 40%        ├───────────────────────────────────────────────┤ y=290
-│                  │  🎂 Mum          🎂 Dan                        │ h=90
-│                  │                                               │
-├──────────────────┴───────────────────────────────────────────────┤ y=380
-│  AAPL $189  ▲1.2%    TSLA $172  ▼0.8%    SPY $524  ▲0.4%         │ h=100
-│  Portfolio: $4,712 total  ·  Today: +$42 (+0.9%)                 │
-└──────────────────────────────────────────────────────────────────┘ y=480
+├──────────────────────┬───────────────────────────────────────────┤ y=90
+│                      │                                           │
+│  ⛅                  │              7:42                         │
+│  Partly Cloudy       │                                           │ h=260
+│                      │          Wednesday, April 6               │
+│  ↑24°  ↓14°          │                                           │
+│  Rain 40%            ├───────────────────────────────────────────┤ y=350
+│                      │   🎂 Mum's birthday is today              │ h=130
+│                      │   🎂 Dan's birthday is in 3 days          │
+│  🌙 (moon disc)      │                                           │
+├──────────────────────┴───────────────────────────────────────────┤ y=480
 ```
 
 **Zone definitions:**
 
 | Zone | x | y | w | h | Content |
 |---|---|---|---|---|---|
-| Quote | 0 | 0 | 800 | 70 | Quote italic (left) + attribution (right-aligned) |
-| Weather | 0 | 70 | 220 | 310 | Icon + description + ↑max ↓min + rain% |
-| Clock | 220 | 70 | 580 | 220 | Large `H:MM` centered, date below |
-| Birthdays | 220 | 290 | 580 | 90 | `🎂 Name` entries — hidden + clock expands if none |
-| Stocks | 0 | 380 | 800 | 100 | Tickers line + portfolio summary line |
+| Quote | 0 | 0 | 800 | 90 | Quote italic (left) + attribution (right-aligned) |
+| Weather | 0 | 90 | 200 | 390 | Icon + description + ↑max ↓min + rain% + moon disc |
+| Clock | 200 | 90 | 600 | 260 | Large `H:MM` centered, date below |
+| Reminders | 200 | 350 | 600 | 130 | Birthday/reminder entries — hidden + clock expands if none |
+| Stocks | — | — | — | — | Fetched, not rendered (reserved for future version) |
 
 **Layout rules:**
 - No zone title labels are shown on screen.
-- If no birthdays today: Birthday zone is hidden; Clock zone expands to `h=310` (y=70 to y=380).
-- Quote strip supports up to two lines of text at 16pt; attribution is always right-aligned on the last line.
-- Stocks zone has two text lines: line 1 = tickers with prices, line 2 = portfolio summary placeholder.
-- The date (`Wednesday, April 6`) is displayed directly below the clock time within the clock zone, centered.
+- If no reminders today: Reminder zone is hidden; Clock zone expands to `h=390` (y=90 to y=480).
+- Quote strip supports up to two lines of text at 25pt; attribution is always right-aligned on the last line.
+- The time shown is always rendered as **now + 1 minute** so the displayed time remains accurate once the ePaper finishes refreshing.
 
 **Dividers:**
-- Horizontal at y=70 (full width)
-- Horizontal at y=290 (x=220 to x=800 — separates clock from birthdays, only when birthdays exist)
-- Horizontal at y=380 (full width)
-- Vertical at x=220 (y=70 to y=380)
+- Horizontal at y=90 (full width)
+- Vertical at x=200 (y=90 to y=480)
+- Horizontal at y=350 (x=200 to x=800 — separates clock from reminders, only when reminders exist)
 
 ### 4.2 Partial Refresh Region
 
-On each minute-tick, only the clock sub-region is redrawn (clock time + date below it). The footer is removed so there is no second partial region.
+On each minute-tick, only the clock sub-region is redrawn (clock time + date below it).
 
 | Region | x | y | w | h |
 |---|---|---|---|---|
-| Clock + date | 220 | 70 | 580 | 220 |
+| Clock + date | 200 | 90 | 600 | 260 |
 
 ### 4.3 Typography
 
 | Element | Font | Size | Style | Notes |
 |---|---|---|---|---|
-| Clock (H:MM) | Montserrat | 120pt | Bold | Tabular figures — digits don't shift layout |
-| Date below clock | Montserrat | 24pt | Regular | `Day, Month D` format — `Wednesday, April 6` |
-| Weather icon | NerdFontsSymbolsOnly | 52pt | Regular | WMO code → glyph (see §6.3) |
-| Weather description | Inter | 17pt | Regular | e.g. "Partly Cloudy" |
-| Weather temp (max/min) | Inter | 20pt | Bold | `↑24°  ↓14°` on one line |
-| Weather rain | Inter | 16pt | Regular | `Rain 40%` |
-| Birthday entries | Inter | 20pt | Medium | `🎂 Name` |
-| Stock ticker | JetBrains Mono | 18pt | Bold | |
-| Stock price / change | JetBrains Mono | 17pt | Regular | `▲` / `▼` prefix |
-| Stocks line 2 | Inter | 15pt | Regular | Portfolio summary (static placeholder for now) |
-| Quote text | Playfair Display | 16pt | Italic | Multi-line, max 2 lines |
-| Quote attribution | Inter | 13pt | Regular | Right-aligned, `— Name, Source` |
+| Clock (H:MM) | Montserrat | 148pt | Regular | No leading zero on hour |
+| Date below clock | Montserrat | 32pt | Regular | `Day, Month D` format — `Wednesday, April 6` |
+| Weather icon | NerdFontsSymbolsOnly | 72pt | Regular | WMO code → glyph (see §6.3) |
+| Weather description | Inter | 22pt | Regular | e.g. "Partly Cloudy" |
+| Weather temp (max/min) | Montserrat | 30pt | Bold | `↑24°  ↓14°` on one line |
+| Weather rain | Inter | 20pt | Regular | `Rain 40%` |
+| Reminder entries | Inter | 20pt | Medium | Icon + text, up to 3 entries |
+| Quote text | Playfair Display | 25pt | Italic | Multi-line, max 2 lines |
+| Quote attribution | Inter | 14pt | Regular | Right-aligned, `— Name, Source` |
 
-**Fonts to download** (all free from Google Fonts / Nerd Fonts):
-- Montserrat: [fonts.google.com/specimen/Montserrat](https://fonts.google.com/specimen/Montserrat) → `Montserrat-Bold.ttf`, `Montserrat-Regular.ttf`
-- Inter: [fonts.google.com/specimen/Inter](https://fonts.google.com/specimen/Inter) → `Inter-Bold.ttf`, `Inter-Medium.ttf`, `Inter-Regular.ttf`
-- JetBrains Mono: [fonts.google.com/specimen/JetBrains+Mono](https://fonts.google.com/specimen/JetBrains+Mono) → `JetBrainsMono-Bold.ttf`, `JetBrainsMono-Regular.ttf`
-- Playfair Display: [fonts.google.com/specimen/Playfair+Display](https://fonts.google.com/specimen/Playfair+Display) → `PlayfairDisplay-Italic.ttf`
-- Nerd Fonts: [github.com/ryanoasis/nerd-fonts/releases](https://github.com/ryanoasis/nerd-fonts/releases) → `NerdFontsSymbolsOnly.zip` → extract `NerdFontsSymbolsOnly-Regular.ttf`
+**Fonts** (all free from Google Fonts / Nerd Fonts):
+- Montserrat: `Montserrat-Regular.ttf`
+- Inter: `Inter-Medium.ttf`, `Inter-Regular.ttf`
+- Playfair Display: `PlayfairDisplay-Italic.ttf`
+- Nerd Fonts: `NerdFontsSymbolsOnly-Regular.ttf`
 
-Place all files in `C:\Users\Eli Zeltser\Documents\reTerminal\server\fonts\`.
+Place all files in `server/fonts/`.
 
 ### 4.4 Visual Style Rules
 
-- Background: white (pixel `1`), foreground: black (pixel `0`)
+- Background: white, foreground: black
 - Zone dividers: single-pixel black lines
-- 1-bit output: Pillow Floyd-Steinberg dithering for smooth text rendering
-- Stock change: `▲` for positive, `▼` for negative
+- **Rendering pipeline:** Pillow draws on a 2× canvas (1600×960) in `"L"` (8-bit grayscale) mode, then downsamples to 800×480 with LANCZOS for smooth text and clean icon rendering.
+- **Output format:** PNG, 4-level grayscale dithered to the UC8179 greyscale palette (luminance values 0, 85, 170, 255).
+- Firmware decodes using `png_decode_4gray()` and drives the panel in 4-gray mode.
+- Stock change: `▲` for positive, `▼` for negative (in admin panel / status, not rendered on screen)
 - Weather icons: Nerd Font glyphs (see §6.3)
 
 ---
@@ -346,55 +305,89 @@ Place all files in `C:\Users\Eli Zeltser\Documents\reTerminal\server\fonts\`.
 
 | Window | Start | End | Behaviour |
 |---|---|---|---|
-| Morning | 05:45 | 08:00 | Full refresh on wake, then partial clock tick every minute |
-| Evening | 18:00 | 22:00 | Full refresh on wake, then partial clock tick every minute |
+| Morning | 05:45 | 08:00 | Poll server every 60s; ETag check to skip unchanged content |
+| Evening | 18:00 | 22:00 | Poll server every 60s; ETag check to skip unchanged content |
 
-Times are local (Asia/Jerusalem), synced via NTP at each boot.
+Times are local (Asia/Jerusalem), synced via NTP.
 
-### 5.2 Maintenance Refresh
+### 5.2 Scheduled Events (Inactive Periods)
 
-| Event | Time | Refresh type |
+There are no forced maintenance screen refreshes. During inactive periods the device uses long sleeps, waking only at scheduled events:
+
+| Event | Time | Action |
 |---|---|---|
-| End of morning window | 08:00 | Full refresh → sleep |
-| Midday maintenance | 12:00 | Full refresh → immediately back to sleep |
-| End of evening window | 22:00 | Full refresh → sleep |
+| NTP sync | 00:00 | Clock updated internally — **no display change** |
+| Morning start | 05:45 | Enter active window, begin polling |
+| Evening start | 18:00 | Enter active window, begin polling |
+
+Between events the device shows a screensaver on each timer wake (see §5.5).
 
 ### 5.3 Refresh Decision Logic
 
 ```
 On each wake:
-  IF green button pressed (wakeup reason = GPIO):
-    → fetch /display.png unconditionally (no ETag header)
-    → full refresh
-    → clear FORCE_REFRESH flag
-    → resume normal active/inactive loop
+  Determine mode from local time → MODE_ACTIVE_WINDOW / MODE_NTP_SYNC_ONLY / MODE_INACTIVE
 
-  IF scheduled full refresh time (08:00 / 12:00 / 22:00):
-    → full refresh → sleep
+  MODE_NTP_SYNC_ONLY (00:00):
+    → NTP sync ran at boot — no display action
+    → sleep until 05:45
 
-  ELSE IF in active window:
-    → GET /display.png with If-None-Match: <stored_etag>
-    IF 200 and ETag changed:
-      IF only clock+date region changed → partial refresh
-      ELSE → fast refresh
-    IF 304 → skip update
+  MODE_ACTIVE_WINDOW (05:45–08:00 or 18:00–22:00):
+    IF green button pressed:
+      → GET /display.png unconditionally (no ETag) → full refresh → sleep 60s
+    ELSE IF left/right button pressed:
+      → cycle buf_index in NVS → GET /display/{buf_index} → full refresh → sleep 60s
+    ELSE (timer wake):
+      → GET /display.png with If-None-Match: <stored_etag>
+      200 and ETag changed → decode → refresh display → save ETag
+      304 → skip update
+    → sleep 60s
 
-  ELSE:
-    → sleep until next window
+  MODE_INACTIVE:
+    IF button pressed:
+      → show requested display (or /display.png for green) → sleep 60s
+      (next timer wake will show screensaver and sleep until next event)
+    ELSE (timer wake):
+      → GET /screensaver/{random_index} → display screensaver
+      → sleep until next scheduled event
 
-After 5 consecutive partial/fast refreshes:
+After 5 consecutive partial/fast refreshes during active window:
   → force full refresh → reset counter
 ```
 
 ### 5.4 Sleep Duration Calculation
 
 - **During active window:** 60 seconds
-- **End of window / inactive:** sleep until next scheduled event
+- **Timer wake at NTP sync or inactive:** sleep until next event in `{00:00, 05:45, 18:00}`. After the last event of the day (18:00), the next target is 00:00.
 - **On Wi-Fi failure:** sleep 5 minutes, retry
 
-### 5.5 NTP Time Synchronisation
+### 5.5 Screensaver Mode
 
-Synced at every boot via `il.pool.ntp.org`. Prevents RTC drift over the max ~10-hour overnight sleep (22:00 → 05:45). Falls back to RTC on failure; self-corrects next boot.
+During inactive timer wakes, the device fetches and displays one screensaver image instead of the main dashboard:
+
+1. Firmware calls `GET /screensaver/count` → server returns count of PNGs in `data/screensavers/`
+2. Firmware picks `index = sys_rand32_get() % count`
+3. Firmware calls `GET /screensaver/{index}` → server returns the PNG file
+4. PNG is decoded and displayed with a 4-gray full refresh
+5. The `ss_last` flag is set in NVS so the next main-display fetch forces a full refresh to clear screensaver ghosting
+
+Screensavers are stored as numbered PNGs (`0.png`, `1.png`, …) in `server/data/screensavers/`. Managed via `tools/screensaver_converter.py` (see §12.3).
+
+### 5.6 Display Buffer Rotation
+
+Left and right buttons cycle through display buffers stored on the server. The current buffer index (`buf_index`) is persisted in NVS across sleeps.
+
+| Button | Effect |
+|---|---|
+| Left | `buf_index--` (min 0) |
+| Right | `buf_index++` |
+| Green | Reset to main display (`/display.png`), clear ETag, force full refresh |
+
+The firmware fetches `/display/{buf_index}` when index is changed. The server currently implements `/display/0` only (returns 404 for n > 0, which causes the firmware to reset `buf_index` to 0 and fall back to `/display.png`). Additional display buffers can be added server-side in a future version.
+
+### 5.7 NTP Time Synchronisation
+
+NTP sync via `il.pool.ntp.org` runs at **every boot** (device wakes at 00:00 specifically for this once per day). Prevents RTC drift during the max ~5-hour overnight sleep (22:00 → 00:00 → 05:45). Falls back to RTC on failure; self-corrects next boot. The 00:00 wake does **not** trigger any screen update.
 
 ---
 
@@ -402,9 +395,9 @@ Synced at every boot via `il.pool.ntp.org`. Prevents RTC drift over the max ~10-
 
 ### 6.1 Google Calendar
 
-**Purpose:** Display today's birthday reminders below the clock.
+**Purpose:** Display today's birthday reminders and upcoming events below the clock.
 
-**Auth:** OAuth2 offline refresh token. Credentials in `server\secrets\credentials.json`. Scope: `https://www.googleapis.com/auth/calendar.readonly`.
+**Auth:** OAuth2 offline refresh token. Credentials in `server/secrets/credentials.json`. Scope: `https://www.googleapis.com/auth/calendar.readonly`.
 
 **Query:**
 - Calendar: Birthdays (primary Google account)
@@ -413,9 +406,11 @@ Synced at every boot via `il.pool.ntp.org`. Prevents RTC drift over the max ~10-
 - Max 6 results
 
 **Display rules:**
-- Format: `🎂 Name` — no time shown
-- If no birthdays: Birthday zone hidden, Clock zone expands vertically to fill y=70 to y=380
-- If API unavailable: Birthday zone hidden silently
+- Format: `🎂 Name's birthday is today` / `🎂 Name's birthday is in N days`
+- Non-birthday events: plain event name shown without icon
+- Up to 3 entries shown
+- If no reminders: Reminder zone hidden, Clock zone expands to fill y=90 to y=480
+- If API unavailable: Reminder zone hidden silently
 
 **Update schedule:** 05:45 and 18:00.
 
@@ -423,11 +418,11 @@ Synced at every boot via `il.pool.ntp.org`. Prevents RTC drift over the max ~10-
 
 ### 6.2 Stock Data & Portfolio
 
-**Purpose:** Show live or previous-close prices for a watchlist, and display a static portfolio summary on screen.
+**Purpose:** Track watchlist prices and portfolio P&L. Data is fetched and cached but **not currently rendered on screen** (reserved for a future version).
 
 #### 6.2.1 Watchlist
 
-Tracked tickers stored in `server\data\tickers.json`, managed via the admin panel. Not hardcoded anywhere.
+Tracked tickers stored in `server/data/tickers.json`, managed via the admin panel.
 
 ```json
 ["AAPL", "TSLA", "SPY"]
@@ -435,7 +430,7 @@ Tracked tickers stored in `server\data\tickers.json`, managed via the admin pane
 
 #### 6.2.2 Portfolio Database
 
-Holdings stored in `server\data\portfolio.json`, managed via the admin panel. Schema:
+Holdings stored in `server/data/portfolio.json`, managed via the admin panel. Schema:
 
 ```json
 {
@@ -445,23 +440,11 @@ Holdings stored in `server\data\portfolio.json`, managed via the admin panel. Sc
       "shares": 10,
       "avg_cost": 165.00,
       "notes": "Long-term hold"
-    },
-    {
-      "ticker": "TSLA",
-      "shares": 5,
-      "avg_cost": 210.00,
-      "notes": "Speculative"
     }
   ],
   "last_updated": "2026-05-01T07:30:00"
 }
 ```
-
-At each stock fetch, the server computes for each holding:
-- Current value = shares × current price
-- Gain/loss = current value − (shares × avg_cost)
-- Gain/loss % = gain / (shares × avg_cost) × 100
-- Total portfolio value and total daily P&L
 
 #### 6.2.3 Data Provider
 
@@ -469,28 +452,12 @@ At each stock fetch, the server computes for each holding:
 
 | Fetch time (Israel) | US market state | Shown as |
 |---|---|---|
-| **05:45** | Pre-market / closed | Previous day close — `[prev. close]` label |
-| **17:30** | Market open (~1 hr in) | Live intraday price, no label |
+| **05:45** | Pre-market / closed | Previous day close |
+| **17:30** | Market open (~1 hr in) | Live intraday price |
 
-#### 6.2.4 Display on Screen (v1 — Static Placeholder)
+#### 6.2.4 Display on Screen
 
-The stocks zone shows two lines:
-
-**Line 1 — ticker prices** (live from Polygon.io):
-```
-AAPL $189  ▲1.2%    TSLA $172  ▼0.8%    SPY $524  ▲0.4%
-```
-
-**Line 2 — portfolio summary** (computed from `portfolio.json` + current prices):
-```
-Portfolio: $4,712 total  ·  Today: +$42 (+0.9%)
-```
-
-If `portfolio.json` has no holdings, line 2 is blank.
-
-This is a static display — no AI suggestions or recommendations are shown in this version. The portfolio data and P&L calculation are fully implemented; only the AI-generated suggestion text is deferred to a future version when a Claude API key is available.
-
-> All stock data is informational only — not financial advice.
+Stocks are not rendered in the current version. The stocks zone coordinates are reserved at `y=480` (off-screen) in the renderer. Portfolio P&L is viewable in the admin panel at `/admin/stocks`. Stock rendering will return in a future version.
 
 ---
 
@@ -504,7 +471,6 @@ This is a static display — no AI suggestions or recommendations are shown in t
 
 | Field | API parameter | Display |
 |---|---|---|
-| Current temperature | `current=temperature_2m` | Inline with icon |
 | Today max temp | `daily=temperature_2m_max` | `↑ 24°C` |
 | Today min temp | `daily=temperature_2m_min` | `↓ 14°C` |
 | Weather condition | `current=weather_code` | Icon glyph + text description |
@@ -542,78 +508,89 @@ The clock and date are both displayed within the clock zone — time large and c
 **Timezone:** `Asia/Jerusalem`  
 **POSIX TZ string:** `IST-2IDT,M3.4.4/26,M10.5.0`
 
-No year is shown in the date — day name and month+day only, as this feels more natural at a glance.
+The rendered time is **now + 1 minute** so the display remains accurate by the time the ePaper finishes refreshing.
+
+No year is shown — day name and month+day only.
 
 ---
 
 ### 6.5 Quote of the Day
 
-**Purpose:** Display a beautiful or thought-provoking quote at the top of the screen, from real people, history, or literature (Dune, The Alchemist, etc.).
+**Purpose:** Display a beautiful or thought-provoking quote at the top of the screen.
 
-**Source:** A pre-prepared local file `server\data\quotes.json`. A random quote is selected each morning at 05:45, seeded by the date, so the same quote shows all day and changes each morning. No Claude API is used.
+**Source:** `server/data/quotes.json`. A random quote is selected each morning at 05:45, seeded by the date, so the same quote shows all day and changes each morning.
 
 **Selection logic:** `random.seed(today's date as integer) → random.choice(quotes list)`
 
 | Property | Value |
 |---|---|
-| Source | `server\data\quotes.json` |
+| Source | `server/data/quotes.json` |
 | Selection | Date-seeded random — same quote all day, new one each morning |
-| Max displayed chars | 160 (two lines at 16pt in 800px strip) |
-| Fallback | If `quotes.json` is missing or empty: display a single hardcoded default quote |
+| Fallback | If `quotes.json` is missing or empty: `"Not all those who wander are lost." — J.R.R. Tolkien` |
 
-**Quote file format** (`server\data\quotes.json`) — upload or edit via admin panel:
+**Quote file format:**
 ```json
 [
   {
     "quote": "The mystery of life isn't a problem to solve, but a reality to experience.",
     "attribution": "Frank Herbert, Dune"
-  },
-  {
-    "quote": "When you want something, all the universe conspires in helping you to achieve it.",
-    "attribution": "Paulo Coelho, The Alchemist"
-  },
-  {
-    "quote": "The only true wisdom is in knowing you know nothing.",
-    "attribution": "Socrates"
   }
 ]
 ```
 
-**Preparation:** Use [claude.ai](https://claude.ai) (which you have access to) to generate a large collection of quotes in this exact JSON format, then upload the file via the admin panel. Aim for at least 100 entries for good variety across the year.
+---
 
-> **[ EDIT ]** The quotes file needs to be prepared and uploaded before the system is fully operational. See §9.1 for how to upload it via the admin panel.
+### 6.6 Moon Phase
+
+**Purpose:** Display a visual disc in the weather column showing the current lunar phase.
+
+**Library:** `ephem` (local computation — no network call required)
+
+**Calculation:** Phase is expressed as a float `0.0` (new moon) → `0.5` (full moon) → `1.0` (new moon again), computed from the ratio of days elapsed since the previous new moon to the full cycle length.
+
+**Rendering in the weather zone:**
+
+| Property | Value |
+|---|---|
+| Position Y | ≈ y=420 (lower portion of weather column) |
+| Position X | Tracks phase: new moon near left, full moon at centre, back to left |
+| Disc radius | Bell curve (sin): min 8px at new moon, max 34px at full moon |
+| Style | Black disc with white illuminated region; outline ring |
+
+The disc always appears regardless of whether weather data is available. It updates once daily at 05:45 with the morning fetch.
 
 ---
 
 ## 7. Firmware Specification (E1001)
 
-The firmware platform is **Zephyr RTOS**, chosen because Zephyr has official board support for the `reterminal_e1001` and an existing UC8179 ePaper driver compatible with the GDEY075T7 panel (via the ZEReader open-source project).
+The firmware platform is **Zephyr RTOS**, chosen because Zephyr has official board support for the `reterminal_e1001` and an existing UC8179 ePaper driver.
 
 ### 7.1 Libraries & Components
 
 | Item | Zephyr component | Notes |
 |---|---|---|
-| RTOS | Zephyr v3.7+ | Board target: `reterminal_e1001` |
-| ePaper driver | `drivers/display` + UC8179 | Reference: ZEReader project on GitHub |
-| PNG decoder | `pngle` (vendored) | Lightweight C library |
+| RTOS | Zephyr v3.7+ | Board target: `reterminal_e1001/esp32s3/procpu` |
+| ePaper driver | `drivers/display` + UC8179 | 4-gray mode |
+| PNG decoder | `pngle` (vendored) | Lightweight C library, `png_decode_4gray()` |
 | HTTP client | `net/http_client` | ETag header support |
 | Wi-Fi | `esp_wifi` via Zephyr HAL | |
 | NTP | `net/sntp` | `sntp_simple()` |
-| Settings/storage | `settings` (NVS backend) | Stores ETag, refresh counter |
-| Power management | `pm` subsystem | `pm_state_force(PM_STATE_SOFT_OFF)` |
-| GPIO (button) | `gpio` driver | Green button wakeup |
-| RTC | `rtc` driver | Fallback if NTP fails |
+| Settings/storage | `settings` (NVS backend) | ETag, buf_index, partial_count, ss_last |
+| Power management | `pm` subsystem | `sys_poweroff()` + `esp_sleep_enable_timer_wakeup()` |
+| GPIO (buttons) | `gpio` driver | Left, Right, Green wakeup sources |
 
 ### 7.2 Firmware State Machine
 
 ```
 BOOT (from PM sleep or power-on)
   │
-  ├─► Init: display, SPI, GPIO, settings/NVS
+  ├─► Init: display (4-gray), SPI, GPIO, NVS
   │
-  ├─► Check wakeup reason:
-  │     GPIO (green button) → set FORCE_REFRESH flag
-  │     Timer              → continue normally
+  ├─► Detect wakeup source:
+  │     GPIO (green) → green_wake flag
+  │     GPIO (left)  → left_wake flag  → cycle buf_index--
+  │     GPIO (right) → right_wake flag → cycle buf_index++
+  │     Timer        → continue normally
   │
   ├─► Connect Wi-Fi (timeout 15s, retry 5×)
   │     FAILURE → render Wi-Fi error screen → PM sleep 5 min → reboot
@@ -623,23 +600,34 @@ BOOT (from PM sleep or power-on)
   │
   ├─► Determine mode from local time:
   │
-  │   SCHEDULED_FULL_REFRESH (08:00 / 12:00 / 22:00):
-  │     → full ePaper refresh → sleep until next event
+  │   MODE_NTP_SYNC_ONLY (00:00):
+  │     → NTP already ran above — no display action
+  │     → sleep until 05:45
   │
-  │   ACTIVE_WINDOW (05:45–08:00 or 18:00–22:00):
-  │     IF FORCE_REFRESH:
-  │       → GET /display.png (no ETag) → full refresh → clear flag
-  │     ELSE:
+  │   MODE_INACTIVE:
+  │     IF button wake:
+  │       → fetch /display.png or /display/{buf_index} → full refresh
+  │       → sleep 60s  (next timer wake will show screensaver)
+  │     ELSE (timer wake):
+  │       → screensaver_show_one(rand, ...)
+  │         GET /screensaver/count → pick random index
+  │         GET /screensaver/{index} → decode 4-gray → refresh
+  │       → sleep until next event in {00:00, 05:45, 18:00}
+  │
+  │   MODE_ACTIVE_WINDOW (05:45–08:00 or 18:00–22:00):
+  │     IF ss_last (returning from screensaver):
+  │       → force full refresh, reset partial_count, clear ss_last
+  │     IF green wake:
+  │       → GET /display.png (no ETag) → full refresh → sleep 60s
+  │     ELSE IF left/right wake:
+  │       → GET /display/{buf_index} → full refresh → sleep 60s
+  │     ELSE (timer):
   │       → GET /display.png with If-None-Match: <etag>
-  │       200 → decode → select refresh mode → update → save ETag
+  │       200 → decode → refresh → save ETag
   │       304 → skip
-  │       Error → skip, log
-  │     → PM sleep 60s
+  │     → sleep 60s
   │
-  │   INACTIVE:
-  │     → sleep until next window or maintenance time
-  │
-  └─► Enter PM sleep
+  └─► Enter PM sleep (esp_sleep_enable_timer_wakeup + sys_poweroff)
 ```
 
 ### 7.3 Wi-Fi Error Screen
@@ -652,16 +640,30 @@ If Wi-Fi fails after 5 retries, display before sleeping:
 │   Wi-Fi connection failed                                │
 │   Could not connect to: <SSID>                           │
 │   Retrying in 5 minutes.                                 │
-│   Check network and firmware config.h                    │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
 ```
 
-### 7.4 Green Button — Manual Full Refresh
+### 7.4 Button Behaviour
 
-GPIO3 is configured as a wakeup source. Button press during sleep → boot with `FORCE_REFRESH` set → unconditional full refresh regardless of ETag → resume normal loop.
+| Button | Active window | Inactive |
+|---|---|---|
+| Green (GPIO3) | Force full refresh of main display | Show main display for 60s |
+| Left (GPIO4) | `buf_index--`, fetch `/display/{n}`, full refresh | Show previous buffer for 60s |
+| Right (GPIO5) | `buf_index++`, fetch `/display/{n}`, full refresh | Show next buffer for 60s |
 
-### 7.5 Build Configuration
+All button wakes trigger a 60s sleep after displaying; the following timer wake returns to normal mode behaviour (screensaver if inactive).
+
+### 7.5 NVS Persisted State
+
+| Key | Type | Purpose |
+|---|---|---|
+| `etag` | string (64B) | Last ETag received from server |
+| `buf_index` | uint8 | Current display buffer index |
+| `partial_count` | uint8 | Consecutive partial refreshes before forced full |
+| `ss_last` | uint8 | 1 if previous display was a screensaver |
+
+### 7.6 Build Configuration
 
 **Project structure:**
 ```
@@ -672,61 +674,30 @@ firmware/
 ├── app.overlay
 ├── src/
 │   ├── main.c
+│   ├── config.h
 │   ├── wifi.c / wifi.h
 │   ├── ntp.c / ntp.h
-│   ├── http_fetch.c
-│   ├── png_decode.c
+│   ├── http_fetch.c / http_fetch.h
+│   ├── png_decode.c / png_decode.h
 │   ├── epaper.c / epaper.h
-│   ├── schedule.c
-│   ├── button.c
-│   └── config.h
-├── lib/
-│   └── pngle/
-└── CLAUDE.md
-```
-
-**`prj.conf`:**
-```
-CONFIG_NETWORKING=y
-CONFIG_NET_IPV4=y
-CONFIG_NET_TCP=y
-CONFIG_DNS_RESOLVER=y
-CONFIG_NET_SOCKETS=y
-CONFIG_HTTP_CLIENT=y
-CONFIG_SNTP=y
-CONFIG_WIFI=y
-CONFIG_ESP32_WIFI=y
-CONFIG_DISPLAY=y
-CONFIG_SETTINGS=y
-CONFIG_SETTINGS_NVS=y
-CONFIG_NVS=y
-CONFIG_FLASH=y
-CONFIG_FLASH_MAP=y
-CONFIG_PM=y
-CONFIG_PM_DEVICE=y
-CONFIG_GPIO=y
-CONFIG_RTC=y
-CONFIG_LOG=y
-CONFIG_LOG_DEFAULT_LEVEL=3
-CONFIG_MAIN_STACK_SIZE=8192
-CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=4096
+│   ├── schedule.c / schedule.h
+│   ├── button.c / button.h
+│   ├── screensaver.c / screensaver.h
+│   └── nvs_store.c / nvs_store.h
+└── lib/
+    └── pngle/
 ```
 
 **Build and flash (from Arch Linux):**
 ```bash
-pip install west --break-system-packages
-west init ~/zephyrproject
-cd ~/zephyrproject && west update && west zephyr-export
-west sdk install
-
-cd ~/Documents/reTerminal/firmware
-west build -b reterminal_e1001 .
+cd ~/zephyrproject
+west build -b reterminal_e1001/esp32s3/procpu ~/Documents/reTerminal/firmware
 west flash --runner esptool
-# or:
+# or manually:
 esptool.py -c esp32s3 -p /dev/ttyUSB0 write_flash 0x0 build/zephyr/zephyr.bin
 ```
 
-### 7.6 Configuration (`src/config.h`)
+### 7.7 Configuration (`src/config.h`)
 
 ```c
 #define WIFI_SSID           "Eli"
@@ -734,13 +705,14 @@ esptool.py -c esp32s3 -p /dev/ttyUSB0 write_flash 0x0 build/zephyr/zephyr.bin
 #define WIFI_RETRY_MAX      5
 #define WIFI_TIMEOUT_MS     15000
 
-#define SERVER_HOST         "10.100.102.216"
+#define SERVER_HOST         "10.100.102.4"   // Arch Linux server LAN IP
 #define SERVER_PORT         8080
 #define SERVER_PATH         "/display.png"
 
 #define NTP_SERVER          "il.pool.ntp.org"
 #define TZ_POSIX_STRING     "IST-2IDT,M3.4.4/26,M10.5.0"
 
+// Active windows (24h local time)
 #define MORNING_START_H     5
 #define MORNING_START_M     45
 #define MORNING_END_H       8
@@ -750,15 +722,18 @@ esptool.py -c esp32s3 -p /dev/ttyUSB0 write_flash 0x0 build/zephyr/zephyr.bin
 #define EVENING_END_H       22
 #define EVENING_END_M       0
 
-#define MAINTENANCE_1_H     8
-#define MAINTENANCE_1_M     0
-#define MAINTENANCE_2_H     12
-#define MAINTENANCE_2_M     0
-#define MAINTENANCE_3_H     22
-#define MAINTENANCE_3_M     0
+// Daily NTP sync (no screen refresh)
+#define NTP_SYNC_H          0
+#define NTP_SYNC_M          0
 
 #define MAX_PARTIAL_BEFORE_FULL  5
-#define BUTTON_GREEN_PIN         3
+#define POLL_INTERVAL_ACTIVE_S   60
+#define POLL_INTERVAL_INACTIVE_S 1800
+
+// Buttons
+#define BUTTON_GREEN_PIN    3
+#define BUTTON_LEFT_PIN     4
+#define BUTTON_RIGHT_PIN    5
 
 // ePaper SPI (do not change — hardware fixed)
 #define EPAPER_CLK_PIN      7
@@ -776,65 +751,45 @@ esptool.py -c esp32s3 -p /dev/ttyUSB0 write_flash 0x0 build/zephyr/zephyr.bin
 ### 8.1 Directory Structure
 
 ```
-C:\Users\Eli Zeltser\Documents\reTerminal\
-├── .venv\
-├── server\
-│   ├── main.py                  # FastAPI app — display + admin routes
-│   ├── renderer.py              # Pillow canvas rendering
-│   ├── scheduler.py             # APScheduler tasks
-│   ├── sources\
-│   │   ├── calendar.py          # Google Calendar birthday fetch
+~/Documents/reTerminal/
+├── .venv/
+├── server/
+│   ├── main.py                  # FastAPI app — all HTTP routes
+│   ├── renderer.py              # Pillow canvas rendering (2× supersampling)
+│   ├── scheduler.py             # APScheduler tasks (fetches + clock tick)
+│   ├── state.py                 # Shared in-memory state (PNG bytes, ETag, source data)
+│   ├── sources/
+│   │   ├── calendar_src.py      # Google Calendar birthday fetch
 │   │   ├── stocks.py            # Polygon.io + portfolio P&L calculation
 │   │   ├── weather.py           # Open-Meteo fetch
-│   │   └── quote.py             # Date-seeded random quote selection
-│   ├── admin\
+│   │   ├── quote.py             # Date-seeded random quote selection
+│   │   └── moonphase.py         # ephem moon phase computation
+│   ├── admin/
 │   │   ├── routes.py            # FastAPI admin API routes
-│   │   └── templates\
+│   │   └── templates/
 │   │       ├── base.html
 │   │       ├── quotes.html
-│   │       ├── portfolio.html
-│   │       └── stocks.html
-│   ├── data\
-│   │   ├── quotes.json          # Quote library — upload via admin panel
+│   │       ├── stocks.html
+│   │       └── portfolio.html
+│   ├── data/
+│   │   ├── quotes.json          # Quote library
 │   │   ├── tickers.json         # Stock watchlist
-│   │   └── portfolio.json       # Holdings database
-│   ├── fonts\
-│   │   ├── Montserrat-Bold.ttf
+│   │   ├── portfolio.json       # Holdings database
+│   │   └── screensavers/        # Numbered PNG files: 0.png, 1.png, …
+│   ├── fonts/
 │   │   ├── Montserrat-Regular.ttf
-│   │   ├── Inter-Bold.ttf
 │   │   ├── Inter-Medium.ttf
 │   │   ├── Inter-Regular.ttf
-│   │   ├── JetBrainsMono-Bold.ttf
-│   │   ├── JetBrainsMono-Regular.ttf
 │   │   ├── PlayfairDisplay-Italic.ttf
 │   │   └── NerdFontsSymbolsOnly-Regular.ttf
-│   ├── secrets\
+│   ├── secrets/
 │   │   ├── credentials.json     # Google OAuth — NEVER COMMIT
 │   │   ├── token.json           # Google OAuth token — NEVER COMMIT
 │   │   └── .env                 # API keys — NEVER COMMIT
-│   ├── cache\
-│   │   └── display.png
-│   ├── requirements.txt
-│   ├── nssm_install.ps1
-│   └── CLAUDE.md
-└── firmware\
-    └── CLAUDE.md
+│   └── requirements.txt
+└── tools/
+    └── screensaver_converter.py # GUI tool to prepare screensaver PNGs
 ```
-
-Note: `quote_prompt.txt` and `suggestion_prompt.txt` are removed — no Claude API is used in this version.
-
-**Virtual environment setup (first time):**
-```powershell
-cd "C:\Users\Eli Zeltser\Documents\reTerminal"
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install fastapi uvicorn pillow httpx apscheduler jinja2 `
-            google-api-python-client google-auth-oauthlib `
-            python-dotenv
-pip freeze > server\requirements.txt
-```
-
-Note: `anthropic` package is not installed in this version.
 
 ### 8.2 API Endpoints
 
@@ -843,18 +798,21 @@ Note: `anthropic` package is not installed in this version.
 | Endpoint | Method | Description |
 |---|---|---|
 | `/display.png` | GET | Rendered PNG with ETag. Returns `304` if unchanged. |
-| `/status` | GET | JSON: last render time, source statuses, next fetches, ETag. |
-| `/refresh` | POST | Force immediate re-render and data re-fetch. |
+| `/display/{n}` | GET | Nth display buffer. Currently only `n=0` is implemented; returns `404` for others. |
+| `/screensaver/count` | GET | JSON `{"count": N}` — number of screensaver PNGs available. |
+| `/screensaver/{n}` | GET | Returns screensaver PNG file number `n`. |
+| `/status` | GET | JSON: last render time, source statuses, ETag. |
+| `/refresh` | POST | Force immediate re-render. |
 
-**Admin API (used by admin panel):**
+**Admin API:**
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/quotes` | GET | Return full quotes list as JSON |
+| `/api/quotes` | GET | Return full quotes list |
 | `/api/quotes` | POST | Add a new quote `{quote, attribution}` |
-| `/api/quotes/{id}` | PUT | Update a quote entry |
-| `/api/quotes/{id}` | DELETE | Remove a quote entry |
-| `/api/quotes/upload` | POST | Upload a full `quotes.json` file to replace the current list |
+| `/api/quotes/{idx}` | PUT | Update a quote entry |
+| `/api/quotes/{idx}` | DELETE | Remove a quote entry |
+| `/api/quotes/upload` | POST | Upload a full `quotes.json` file |
 | `/api/tickers` | GET | Return watchlist tickers |
 | `/api/tickers` | POST | Add a ticker `{ticker}` |
 | `/api/tickers/{ticker}` | DELETE | Remove a ticker |
@@ -862,145 +820,80 @@ Note: `anthropic` package is not installed in this version.
 | `/api/portfolio` | POST | Add a holding `{ticker, shares, avg_cost, notes}` |
 | `/api/portfolio/{ticker}` | PUT | Update a holding |
 | `/api/portfolio/{ticker}` | DELETE | Remove a holding |
+| `/api/refetch/{source}` | POST | Force re-fetch of a named source (`weather`, `calendar`, `stocks`, `quote`, `moon`) and re-render. |
 
 **Admin UI pages:**
 
 | Route | Description |
 |---|---|
-| `/admin` | Admin panel home |
+| `/admin` | Admin panel home — shows source statuses |
 | `/admin/quotes` | Quote library manager |
 | `/admin/stocks` | Watchlist + portfolio manager |
 
 ### 8.3 Render Pipeline
 
 ```
-scheduler triggers render()
+scheduler triggers do_render() (or /refresh POST)
   │
-  ├─► Fetch in parallel (asyncio.gather):
-  │     calendar.get_birthdays_today()
-  │     weather.get_today()            [cached post-05:45]
-  │     stocks.get_prices(tickers)     [cached post-scheduled fetch]
+  ├─► Uses cached data in state.py:
+  │     state.weather_data     (from Open-Meteo, refreshed at 05:45)
+  │     state.calendar_data    (from Google Calendar, refreshed 05:45 / 18:00)
+  │     state.stock_data       (from Polygon.io, refreshed 05:45 / 17:30)
+  │     state.quote_data       (date-seeded from quotes.json, refreshed 05:45)
+  │     state.moon_phase       (from ephem, refreshed 05:45)
   │
-  ├─► quote.get_today()               [date-seeded from quotes.json]
-  ├─► Load portfolio.json → compute P&L summary
-  │
-  ├─► renderer.compose(data) → PIL Image (800×480, mode "1")
-  │     draw_quote_strip()       [y=0..70]
-  │     draw_weather_zone()      [x=0..220, y=70..380]
-  │     draw_clock_zone()        [x=220..800, y=70..290 or 70..380]
-  │     draw_birthday_zone()     [x=220..800, y=290..380, if any]
-  │     draw_stocks_zone()       [y=380..480]
-  │     draw_dividers()
+  ├─► renderer.compose(weather, birthdays, stocks, quote, moon_phase)
+  │     Render at 2× (1600×960) in PIL "L" grayscale mode:
+  │       draw_quote_strip()     [y=0..90]
+  │       draw_weather_zone()    [x=0..200, y=90..480] incl. moon disc at y≈420
+  │       draw_clock_zone()      [x=200..800, y=90..350 or 90..480]
+  │       draw_birthday_zone()   [x=200..800, y=350..480, if any]
+  │       draw_dividers()
+  │     Downsample to 800×480 with LANCZOS
   │
   ├─► MD5 hash → ETag
-  ├─► If changed → write cache\display.png
-  └─► Return (bytes, etag)
+  ├─► Store png_bytes and etag in state.py (in-memory)
+  └─► Update last_render_time
 ```
 
 ### 8.4 Scheduling
 
 | Task | Schedule | Notes |
 |---|---|---|
-| Full render | Every 60s (active windows) / every 30 min (inactive) | ETag prevents unnecessary display refresh |
-| Weather fetch | Daily at 05:45 | Min/max included, cached all day |
-| Stock fetch | Daily at 05:45 and 17:30 | Includes portfolio P&L calculation |
-| Calendar fetch | Daily at 05:45 and 18:00 | Re-fetched for evening window |
-| Quote selection | Daily at 05:45 | Date-seeded random pick from quotes.json |
-
-### 8.5 `server\CLAUDE.md`
-
-```markdown
-# CLAUDE.md — ePaper Dashboard Server
-
-## What this does
-FastAPI server on Windows 10 (DESKTOP-NJR6V52), Asus A554I.
-IP: 10.100.102.216 (DHCP-reserved, stable).
-Renders 800×480 1-bit PNG for Seeed reTerminal E1001 ePaper display.
-Hosts admin panel at /admin for managing quotes, stocks, portfolio.
-
-## Activate venv first
-  C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\Activate.ps1
-
-## Run (development)
-  cd server
-  python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
-
-## Useful commands
-  curl -X POST http://localhost:8080/refresh
-  curl http://localhost:8080/status
-  # Admin panel: open http://10.100.102.216:8080/admin in browser
-
-## Critical constraints
-- Image: exactly 800×480 px, PIL mode "1" (1-bit black/white)
-- Fonts: always ImageFont.truetype() from server\fonts\ — never default fonts
-- HTTP: always httpx.AsyncClient — never requests library
-- Secrets: load from server\secrets\.env — never hardcode
-- Data files in server\data\ are user-managed — never overwrite on startup
-- No Claude/Anthropic API is used in this version
-
-## Layout zones (pixels)
-- Quote:     x=0,   y=0,   w=800, h=70
-- Weather:   x=0,   y=70,  w=220, h=310
-- Clock:     x=220, y=70,  w=580, h=220  (expands to h=310 if no birthdays)
-- Birthdays: x=220, y=290, w=580, h=90   (hidden if none today)
-- Stocks:    x=0,   y=380, w=800, h=100
-
-## Clock zone
-- Time: Montserrat Bold 120pt, centered in upper portion of clock zone
-- Date: Montserrat Regular 24pt, centered directly below time
-- Format: H:MM  and  "Wednesday, April 6"
-
-## Data files (never overwrite on startup)
-- server\data\quotes.json     — quote library (upload via /api/quotes/upload)
-- server\data\tickers.json    — stock watchlist
-- server\data\portfolio.json  — holdings with shares + avg cost
-
-## Data sources
-- Calendar: Birthdays only, token.json auto-refreshes
-- Stocks: Polygon.io at 05:45 and 17:30; P&L from portfolio.json
-- Weather: Open-Meteo, lat=32.08 lon=34.78, no wind speed
-- Quote: date-seeded random from quotes.json, no Claude API
-```
+| Morning fetch | 05:45 daily | All sources in parallel: weather, calendar, stocks, quote, moon phase → then render |
+| Evening calendar re-fetch | 18:00 daily | Calendar re-queried for evening window |
+| Evening stocks re-fetch | 17:30 daily | Stock prices refreshed before evening window |
+| Clock tick render | Every 60s | Re-render so time stays current; ETag changes only if content differs |
 
 ---
 
 ## 9. Management UI — Admin Panel
 
-The admin panel is served by the same FastAPI process on `/admin` routes. Accessible from any browser on the home network at `http://10.100.102.216:8080/admin`. No authentication required (local network only). Uses Jinja2 HTML templates.
+The admin panel is served by the same FastAPI process on `/admin` routes. No authentication required (local network only). Uses Jinja2 HTML templates.
 
 ### 9.1 Quote Manager (`/admin/quotes`)
 
-Manages the quote library stored in `server\data\quotes.json`.
+Manages the quote library stored in `server/data/quotes.json`.
 
 **Features:**
-- **Upload file:** file upload button to replace the entire `quotes.json` with a new prepared file. This is the primary workflow — prepare a large file using [claude.ai](https://claude.ai), then upload it here.
+- **Upload file:** replace the entire `quotes.json` with a prepared file
 - **List view:** table showing all quotes with index, text snippet, and attribution
-- **Add quote:** form with quote text + attribution fields
-- **Edit quote:** inline edit per entry
-- **Delete quote:** delete button per entry
-- **Preview:** "Refresh display now" button triggers `POST /refresh`
-- **Stats:** shows total number of quotes in library and today's selected quote index
-
-**Recommended quote file preparation workflow:**
-1. Open [claude.ai](https://claude.ai)
-2. Ask Claude to generate 100+ quotes in the exact JSON format shown in §6.5
-3. Specify themes: literature (Dune, Alchemist), science, history, philosophy
-4. Copy the JSON output to a file named `quotes.json`
-5. Upload via this admin panel page
+- **Add / Edit / Delete** individual quotes
+- **Today's quote:** shows which quote is currently selected and total count
 
 ### 9.2 Stock & Watchlist Manager (`/admin/stocks`)
 
-Manages `tickers.json` and `portfolio.json`.
+Manages `tickers.json` and `portfolio.json`. Stock prices are fetched and P&L is computed; the stocks zone is not rendered on screen in the current version but all data is accessible here.
 
-**Watchlist section:**
-- Current tickers listed with delete button
-- Add ticker: text field + "Add" button
+**Watchlist section:** list current tickers with delete; add new ticker.
 
-**Portfolio section:**
-- Table: Ticker | Shares | Avg Cost | Notes | Current Price | Value | P&L | P&L%
-- Current price and P&L computed from last cached stock fetch
-- Add / edit / delete holdings
-- If no stock fetch has occurred yet, Current Price and P&L columns show `—`
+**Portfolio section:** table with Ticker | Shares | Avg Cost | Notes | Current Price | Value | P&L | P&L%. Add, edit, delete holdings.
+
+### 9.3 Screensaver Management
+
+Screensavers are managed via the file system, not the admin panel. Use `tools/screensaver_converter.py` to prepare images (see §12.3), then save the output PNGs to `server/data/screensavers/` with sequential numeric names (`0.png`, `1.png`, …).
+
+The admin panel home at `/admin` shows `source_statuses` including moon phase status.
 
 ---
 
@@ -1008,7 +901,7 @@ Manages `tickers.json` and `portfolio.json`.
 
 ### 10.1 Server `.env` file
 
-Location: `C:\Users\Eli Zeltser\Documents\reTerminal\server\secrets\.env`
+Location: `server/secrets/.env`
 
 ```env
 # ── Google Calendar ──────────────────────────────────────────
@@ -1020,7 +913,6 @@ GOOGLE_CALENDAR_ID=primary
 STOCK_PROVIDER=polygon
 STOCK_API_KEY=<!-- your Polygon.io API key -->
 STOCK_FETCH_TIMES=05:45,17:30
-STOCK_SUGGESTION_TRIGGER_PCT=1.5
 
 # ── Weather ──────────────────────────────────────────────────
 WEATHER_LAT=32.08
@@ -1033,15 +925,14 @@ SERVER_HOST=0.0.0.0
 SERVER_PORT=8080
 ```
 
-No `ANTHROPIC_API_KEY` in this version.
-
 ### 10.2 User-Editable Data Files
 
 | File | Content | Managed via |
 |---|---|---|
-| `data\quotes.json` | Quote library | Admin panel → Quotes (upload or individual edit) |
-| `data\tickers.json` | Stock watchlist | Admin panel → Stocks |
-| `data\portfolio.json` | Holdings with shares + avg cost | Admin panel → Stocks |
+| `data/quotes.json` | Quote library | Admin panel → Quotes |
+| `data/tickers.json` | Stock watchlist | Admin panel → Stocks |
+| `data/portfolio.json` | Holdings with shares + avg cost | Admin panel → Stocks |
+| `data/screensavers/*.png` | Screensaver images | `tools/screensaver_converter.py` |
 
 ### 10.3 `.gitignore`
 
@@ -1065,23 +956,26 @@ build/
 | **Wi-Fi fails at boot (E1001)** | Retry 5×, 5s apart → render error screen → PM sleep 5 min → retry |
 | **NTP sync fails** | Use RTC, log warning. Self-corrects next boot |
 | **Server unreachable** | Keep last displayed image. Sleep and retry |
-| **Google Calendar API error** | Birthday zone hidden silently |
+| **Google Calendar API error** | Reminder zone hidden silently |
 | **Polygon.io error / rate limit** | Last known price with `[delayed]` label |
 | **Weather API error** | Weather zone shows `—` |
+| **Moon phase error** | Moon disc not drawn; rest of weather zone unaffected |
 | **Server render exception** | Log traceback. Serve last cached PNG. Server stays up |
 | **PNG decode error (E1001)** | Skip update, log, sleep normally |
-| **quotes.json missing or empty** | Display hardcoded default quote: `"Not all those who wander are lost." — J.R.R. Tolkien` |
-| **portfolio.json missing or empty** | Stocks zone shows tickers only, line 2 blank |
+| **No screensavers available** | Screensaver step silently skipped; device sleeps normally |
+| **Screensaver 404 (E1001)** | Screensaver step skipped; device sleeps normally |
+| **`quotes.json` missing or empty** | Display hardcoded default: `"Not all those who wander are lost." — J.R.R. Tolkien` |
+| **`portfolio.json` missing or empty** | Portfolio P&L hidden in admin panel; stocks line 2 blank |
 
 ---
 
 ## 12. Development Toolchain
 
-### 12.1 Laptop / Server Side (Windows 10)
+### 12.1 Server Side (Arch Linux)
 
 | Tool | Purpose | Install |
 |---|---|---|
-| Python 3.12 | Runtime | [python.org](https://python.org) |
+| Python 3.12+ | Runtime | `sudo pacman -S python` |
 | venv | Isolation | `python -m venv .venv` |
 | FastAPI + Uvicorn | HTTP server + admin routes | `pip install fastapi uvicorn` |
 | Jinja2 | Admin panel templates | `pip install jinja2` |
@@ -1090,14 +984,14 @@ build/
 | APScheduler | Task scheduling | `pip install apscheduler` |
 | google-api-python-client | Calendar SDK | `pip install google-api-python-client google-auth-oauthlib` |
 | python-dotenv | `.env` loading | `pip install python-dotenv` |
-| NSSM | Windows Service manager | [nssm.cc](https://nssm.cc/download) |
-| Claude Code | AI-assisted development | `npm install -g @anthropic-ai/claude-code` |
+| ephem | Moon phase calculation | `pip install ephem` |
+| tkinter | Screensaver converter GUI | `sudo pacman -S tk` |
 
 **Full install:**
-```powershell
-C:\Users\Eli Zeltser\Documents\reTerminal\.venv\Scripts\Activate.ps1
-pip install fastapi uvicorn jinja2 pillow httpx apscheduler `
-            google-api-python-client google-auth-oauthlib python-dotenv
+```bash
+source .venv/bin/activate
+pip install fastapi uvicorn jinja2 pillow httpx apscheduler \
+            google-api-python-client google-auth-oauthlib python-dotenv ephem
 ```
 
 ### 12.2 E1001 Firmware Side (Arch Linux)
@@ -1110,28 +1004,41 @@ pip install fastapi uvicorn jinja2 pillow httpx apscheduler `
 | esptool | Flashing | `pip install esptool --break-system-packages` |
 
 ```bash
-pip install west --break-system-packages
 west init ~/zephyrproject
 cd ~/zephyrproject && west update && west zephyr-export
 west sdk install
 
 cd ~/Documents/reTerminal/firmware
-west build -b reterminal_e1001 .
+west build -b reterminal_e1001/esp32s3/procpu .
 west flash --runner esptool
 ```
 
-> Keep `PLATFORMIO_CORE_DIR=/opt/platformio` in `.bashrc`.
-
-### 12.3 Claude Code
-
-```powershell
-# Server (Windows)
-cd "C:\Users\Eli Zeltser\Documents\reTerminal\server"
-claude
-```
+**Serial monitor:**
 ```bash
-# Firmware (Arch)
-cd ~/Documents/reTerminal/firmware
+west espressif monitor
+# or: screen /dev/ttyUSB0 115200
+```
+
+### 12.3 Screensaver Converter (`tools/screensaver_converter.py`)
+
+A Tkinter GUI tool to convert photos into screensaver PNGs for the ePaper display.
+
+**Workflow:**
+1. `python tools/screensaver_converter.py`
+2. Pick a photo (JPEG or PNG)
+3. Position the 5:3 crop box over the desired area (click or drag)
+4. Preview the 4-level grayscale result
+5. Save to `server/data/screensavers/` with a sequential numeric name
+
+**Processing:**
+- Crops to a 5:3 region (matching the 800×480 panel ratio)
+- Resizes to 800×480 with LANCZOS
+- Converts to 4-level grayscale (`L=0, 85, 170, 255`) with Floyd-Steinberg dithering
+
+### 12.4 Claude Code
+
+```bash
+cd ~/Documents/reTerminal
 claude
 ```
 
@@ -1143,13 +1050,14 @@ claude
 |---|---|---|---|
 | 1 | Tickers to track | Add via admin panel at `/admin/stocks` | <!-- TBD --> |
 | 2 | Portfolio holdings | Enter via admin panel — shares, avg cost, notes | <!-- TBD --> |
-| 3 | E1001 IP | DHCP-reserved at `10.100.102.4` | ✅ Done |
-| 4 | Quotes file preparation | Use claude.ai to generate 100+ quotes, upload via admin panel | <!-- TBD --> |
-| 5 | Green button refresh | ✅ Resolved — full refresh on button press | ✅ Done |
-| 6 | ZEReader UC8179 driver | Reference or fork from ZEReader repo — confirm license | <!-- TBD --> |
-| 7 | Birthday zone if empty | Clock+date expand to fill space — confirm visually after first run | <!-- TBD --> |
-| 8 | Admin panel auth | Currently none (LAN only). Add basic password if desired in future. | <!-- TBD --> |
-| 9 | Claude API / AI features | Deferred — re-enable suggestion_prompt.txt and quote AI when API key available | <!-- Future v2 --> |
+| 3 | Quotes file preparation | Use claude.ai to generate 100+ quotes, upload via admin panel | <!-- TBD --> |
+| 4 | Green button refresh | ✅ Resolved — full refresh on button press | ✅ Done |
+| 5 | Birthday zone if empty | Clock+date expand to fill space — confirmed in code | ✅ Done |
+| 6 | Admin panel auth | Currently none (LAN only). Add basic password if desired in future. | <!-- TBD --> |
+| 7 | Claude API / AI features | Deferred — re-enable when API key available | <!-- Future v2 --> |
+| 8 | Stocks zone on screen | Currently off-screen (y=480). Render in a future version when layout is revised. | <!-- Future v2 --> |
+| 9 | Multiple display buffers | Server-side `/display/{n}` only implements n=0. Add additional buffer modes. | <!-- Future --> |
+| 10 | Screensaver admin UI | Currently managed via file system + converter tool. Add admin panel UI? | <!-- TBD --> |
 
 ---
 
@@ -1161,8 +1069,9 @@ claude
 | 0.2 | 01.05.2026 | Quote of the day; network topology; NSSM; grid redesign; weather fields; NTP; ESP-IDF firmware; Wi-Fi error screen; stock schedule |
 | 0.3 | 01.05.2026 | Venv path; full Windows paths; Ethernet static IP setup; layout redesign; quote sources expanded to literature; firmware to Zephyr; green button resolved |
 | 0.4 | 01.05.2026 | DHCP reservation confirmed; laptop IP/hostname/gateway filled in; quote strip h=70; clock enlarged (110pt); birthday zone reduced; footer added (70px); wind speed removed; stocks zone 90px; portfolio.json added; tickers.json admin-managed; Claude prompt files added; admin panel §9 with portfolio AI query; jinja2 added |
-| 0.5 | 01.05.2026 | Claude API removed (no key available) — quotes now use local `quotes.json` with date-seeded random selection; stock AI suggestions replaced with static P&L summary placeholder; `quote_prompt.txt` and `suggestion_prompt.txt` removed; `anthropic` package removed from dependencies; footer zone removed — canvas is now Quote/Weather/Clock+Date+Birthdays/Stocks only; clock zone enlarged (h=220); weather zone enlarged (h=310); stocks zone enlarged (h=100); date moved into clock zone below the time; clock font changed from Inter to **Montserrat** (Bold 120pt for time, Regular 24pt for date); date format changed to `Wednesday, April 6` (no year); partial refresh region updated (clock+date only, no footer); §7.1 comparison table removed — Zephyr choice stated concisely; `WIFI_RETRY_MAX` changed from 3 to **5**; Wi-Fi error screen updated to reflect 5 retries; admin panel §9.1 updated to file-upload workflow with claude.ai preparation instructions; `/api/quotes/upload` endpoint added; fallback quote added to error handling table; `portfolio/query` Claude endpoint removed from admin panel and API table |
+| 0.5 | 01.05.2026 | Claude API removed; quotes use local date-seeded JSON; stock AI replaced with P&L summary; footer removed; clock zone enlarged; date in clock zone; Montserrat font; partial refresh region updated; Wi-Fi retry count set to 5; admin panel updated to file-upload workflow; `/api/quotes/upload` added; fallback quote added |
+| 0.6 | 09.05.2026 | Server moved to Arch Linux (removed Windows/NSSM); layout zones updated (quote h=90, weather w=200 y=90, clock x=200 w=600 h=260, reminders y=350 h=130); stocks zone removed from screen (data still fetched); rendering changed to PIL "L" grayscale mode with 2× supersampling + LANCZOS; font sizes updated throughout; moon phase feature added (ephem, disc in weather column); screensaver feature added (inactive timer wakes → random screensaver from data/screensavers/); display buffer rotation added (left/right buttons, buf_index in NVS); maintenance refreshes (08:00 / 12:00 / 22:00) removed; NTP sync moved to single daily 00:00 wakeup with no screen refresh; MODE_SCHEDULED_REFRESH replaced by MODE_NTP_SYNC_ONLY; schedule events reduced to {00:00, 05:45, 18:00}; state.py module added; /screensaver/* and /api/refetch/* endpoints added; tools/screensaver_converter.py added; time rendered as now+1min |
 
 ---
 
-*All `<!-- EDIT -->` and `<!-- TBD -->` markers indicate places requiring input before implementation begins.*
+*All `<!-- TBD -->` markers indicate decisions still pending.*

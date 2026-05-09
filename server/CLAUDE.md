@@ -2,7 +2,7 @@
 
 ## What this does
 FastAPI server on Arch Linux.
-Renders 800×480 1-bit PNG for Seeed reTerminal E1001 ePaper display.
+Renders 800×480 grayscale PNG for Seeed reTerminal E1001 ePaper display.
 Hosts admin panel at /admin for managing quotes, stocks, portfolio.
 
 ## Run
@@ -14,10 +14,10 @@ Hosts admin panel at /admin for managing quotes, stocks, portfolio.
   curl -X POST http://localhost:8080/refresh
   curl http://localhost:8080/status
   curl -o /tmp/test.png http://localhost:8080/display.png
-  # then open /tmp/test.png to inspect the rendered image
+  curl http://localhost:8080/screensaver/count
 
 ## Critical constraints
-- Image: exactly 800×480 px, PIL mode "L" (8-bit grayscale)
+- Image: exactly 800×480 px, PIL mode "L" (8-bit grayscale), rendered at 2× then LANCZOS-downsampled
 - Fonts: always ImageFont.truetype() from server/fonts/ — never PIL default fonts
 - HTTP: always httpx.AsyncClient — never requests library
 - Secrets: load from server/secrets/.env — never hardcode
@@ -25,32 +25,34 @@ Hosts admin panel at /admin for managing quotes, stocks, portfolio.
 - No Claude/Anthropic API in this version
 
 ## Layout zones (pixels)
-- Quote:     x=0,   y=0,   w=800, h=70
-- Weather:   x=0,   y=70,  w=220, h=310
-- Clock:     x=220, y=70,  w=580, h=220  (expands to h=310 if no birthdays)
-- Birthdays: x=220, y=290, w=580, h=90   (hidden if none today)
-- Stocks:    x=0,   y=380, w=800, h=100
+- Quote:     x=0,   y=0,   w=800, h=90
+- Weather:   x=0,   y=90,  w=200, h=390  (moon disc drawn at y≈420)
+- Clock:     x=200, y=90,  w=600, h=260  (expands to h=390 if no reminders)
+- Reminders: x=200, y=350, w=600, h=130  (hidden when empty)
+- Stocks: NOT rendered (data fetched, zone at y=480 / off-screen)
 
 ## Clock zone
-- Time: Montserrat Bold 120pt, centered in upper portion of clock zone
-- Date: Montserrat Regular 24pt, centered directly below time
+- Time: Montserrat Regular 148pt, centered; rendered as now+1min
+- Date: Montserrat Regular 32pt, centered directly below time
 - Format: H:MM  and  "Wednesday, April 6"
 
 ## Module map
-  main.py        — FastAPI app, all HTTP routes
-  state.py       — shared in-memory state (png bytes, etag, cached source data)
-  renderer.py    — Pillow canvas composition
-  scheduler.py   — APScheduler jobs (fetches + periodic render)
-  sources/       — one module per data source
+  main.py        — FastAPI app, all HTTP routes (display, screensaver, admin)
+  state.py       — shared in-memory state (png bytes, etag, all source data)
+  renderer.py    — Pillow canvas composition (2× supersampling)
+  scheduler.py   — APScheduler: morning fetch at 05:45, eve cal 18:00, eve stocks 17:30, tick every 60s
+  sources/       — calendar_src.py, weather.py, stocks.py, quote.py, moonphase.py
   admin/         — admin panel routes and Jinja2 templates
 
 ## Data files (never overwrite on startup)
-  server/data/quotes.json     — quote library (upload via /api/quotes/upload)
-  server/data/tickers.json    — stock watchlist
-  server/data/portfolio.json  — holdings with shares + avg cost
+  server/data/quotes.json          — quote library
+  server/data/tickers.json         — stock watchlist
+  server/data/portfolio.json       — holdings with shares + avg cost
+  server/data/screensavers/*.png   — numbered screensaver images (0.png, 1.png, …)
 
 ## Data sources
-  Calendar: Birthdays only, token.json auto-refreshes
-  Stocks:   Polygon.io at 05:45 and 17:30; P&L from portfolio.json
+  Calendar: Birthdays + events, token.json auto-refreshes
+  Stocks:   Polygon.io at 05:45 and 17:30; P&L from portfolio.json (not rendered)
   Weather:  Open-Meteo, lat=32.08 lon=34.78, Celsius, no wind speed
   Quote:    date-seeded random from quotes.json, no Claude API
+  Moon:     ephem library, phase 0.0 (new) → 0.5 (full) → 1.0; disc in weather column

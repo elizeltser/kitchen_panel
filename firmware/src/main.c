@@ -200,14 +200,10 @@ int main(void)
 		ss_last = 1;
 		nvs_store_ss_last_set(1);
 
-	} else if (mode == MODE_SCHEDULED_REFRESH) {
+	} else if (mode == MODE_NTP_SYNC_ONLY) {
 
-		/* Maintenance refresh (08:00 / 12:00 / 22:00): force full, clear ETag */
-		partial_count = 0;
-		nvs_store_partial_count_set(0);
-		nvs_store_etag_set("");
-		stored_etag[0] = '\0';
-		do_fetch_and_display("/display.png", NULL, true);
+		/* 00:00 NTP sync: clock already updated in Phase 5, no display action */
+		LOG_INF("NTP sync only — skipping display update");
 
 	} else { /* MODE_ACTIVE_WINDOW */
 

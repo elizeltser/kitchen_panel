@@ -10,7 +10,7 @@ Two subsystems:
 Full spec: FSD.md
 
 ## Key constraints
-- Image: exactly 800×480 px, PIL mode "1" (1-bit black/white)
+- Image: exactly 800×480 px, PIL mode "L" (8-bit grayscale, 2× supersampled)
 - Server runs on Arch Linux — no Windows paths, no NSSM
 - Fonts: always ImageFont.truetype() from server/fonts/ — never PIL default fonts
 - HTTP client: always httpx.AsyncClient — never requests library
@@ -18,11 +18,18 @@ Full spec: FSD.md
 - Data files in server/data/ are user-managed — never overwrite on startup
 - No Claude/Anthropic API in this version
 
+## Layout zones (pixels)
+- Quote:     x=0,   y=0,   w=800, h=90
+- Weather:   x=0,   y=90,  w=200, h=390  (moon disc at y≈420)
+- Clock:     x=200, y=90,  w=600, h=260  (expands to h=390 if no reminders)
+- Reminders: x=200, y=350, w=600, h=130  (hidden when empty)
+- Stocks: fetched but NOT rendered on screen
+
 ## Quick start (server)
   source .venv/bin/activate
   cd server && uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 
 ## Quick start (firmware)
-  cd firmware
-  west build -b reterminal_e1001 .
+  cd ~/zephyrproject
+  west build -b reterminal_e1001/esp32s3/procpu ~/Documents/reTerminal/firmware
   west flash --runner esptool

@@ -26,13 +26,9 @@
 #define EVENING_END_H        22
 #define EVENING_END_M        0
 
-/* ── Maintenance full-refresh times ────────────────────────── */
-#define MAINTENANCE_1_H      8
-#define MAINTENANCE_1_M      0
-#define MAINTENANCE_2_H      12
-#define MAINTENANCE_2_M      0
-#define MAINTENANCE_3_H      22
-#define MAINTENANCE_3_M      0
+/* ── Daily NTP sync time (no screen refresh) ────────────────── */
+#define NTP_SYNC_H           0
+#define NTP_SYNC_M           0
 
 /* ── Refresh policy ─────────────────────────────────────────── */
 #define MAX_PARTIAL_BEFORE_FULL   5

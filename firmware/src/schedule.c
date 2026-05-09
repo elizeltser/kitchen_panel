@@ -26,18 +26,15 @@ bool schedule_is_evening(const struct tm *t)
 	return m >= start && m < end;
 }
 
-static bool is_maintenance(const struct tm *t)
+static bool is_ntp_sync(const struct tm *t)
 {
-	int m = to_minutes(t);
-	return m == MAINTENANCE_1_H * 60 + MAINTENANCE_1_M ||
-	       m == MAINTENANCE_2_H * 60 + MAINTENANCE_2_M ||
-	       m == MAINTENANCE_3_H * 60 + MAINTENANCE_3_M;
+	return to_minutes(t) == NTP_SYNC_H * 60 + NTP_SYNC_M;
 }
 
 schedule_mode_t schedule_get_mode(const struct tm *t)
 {
-	if (is_maintenance(t)) return MODE_SCHEDULED_REFRESH;
 	if (schedule_is_morning(t) || schedule_is_evening(t)) return MODE_ACTIVE_WINDOW;
+	if (is_ntp_sync(t)) return MODE_NTP_SYNC_ONLY;
 	return MODE_INACTIVE;
 }
 
@@ -47,11 +44,9 @@ int schedule_sleep_seconds(const struct tm *t)
 
 	/* Ordered list of next wake-up times (minutes since midnight) */
 	int events[] = {
+		NTP_SYNC_H     * 60 + NTP_SYNC_M,         /* 00:00 */
 		MORNING_START_H * 60 + MORNING_START_M,   /* 05:45 */
-		MAINTENANCE_1_H * 60 + MAINTENANCE_1_M,   /* 08:00 */
-		MAINTENANCE_2_H * 60 + MAINTENANCE_2_M,   /* 12:00 */
 		EVENING_START_H * 60 + EVENING_START_M,   /* 18:00 */
-		MAINTENANCE_3_H * 60 + MAINTENANCE_3_M,   /* 22:00 */
 	};
 
 	for (int i = 0; i < (int)(sizeof(events) / sizeof(events[0])); i++) {
@@ -63,9 +58,9 @@ int schedule_sleep_seconds(const struct tm *t)
 		}
 	}
 
-	/* All today's events passed — sleep until 05:45 tomorrow */
-	int delta = ((24 * 60 - now) + MORNING_START_H * 60 + MORNING_START_M) * 60
+	/* All today's events passed — sleep until 00:00 tomorrow */
+	int delta = ((24 * 60 - now) + NTP_SYNC_H * 60 + NTP_SYNC_M) * 60
 	            - t->tm_sec;
-	LOG_DBG("Sleeping until tomorrow 05:45 (%d s)", delta);
+	LOG_DBG("Sleeping until tomorrow 00:00 (%d s)", delta);
 	return delta;
 }

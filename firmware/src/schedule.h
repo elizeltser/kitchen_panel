@@ -4,7 +4,7 @@
 
 typedef enum {
 	MODE_ACTIVE_WINDOW,       /* morning or evening window — poll every 60s */
-	MODE_SCHEDULED_REFRESH,   /* 08:00 / 12:00 / 22:00 maintenance refresh */
+	MODE_NTP_SYNC_ONLY,       /* 00:00 daily NTP sync — no display update */
 	MODE_INACTIVE,            /* outside all windows — sleep until next event */
 } schedule_mode_t;
 
