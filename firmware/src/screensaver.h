@@ -3,15 +3,12 @@
 #include <stddef.h>
 
 /**
- * Run the screensaver blocking loop.
+ * Fetch one screensaver image from the server and display it.
  *
- * Fetches screensaver count from GET /screensaver/count, then cycles
- * images from GET /screensaver/{n} every SCREENSAVER_CYCLE_MS seconds.
- * Left/right buttons cycle prev/next; green button exits early.
- * Returns after SCREENSAVER_ACTIVE_MS or green button press.
- * Caller should then enter deep sleep.
- *
- * If the server has no screensaver images (count == 0), returns immediately.
+ * Requests GET /screensaver/count, then fetches
+ * GET /screensaver/{index_hint % count} and drives the display.
+ * Returns immediately after the single refresh.
+ * Does nothing if the server reports count == 0.
  */
-void screensaver_run(uint8_t *png_buf, size_t png_buf_size,
-                     uint8_t *dtm1, uint8_t *dtm2, size_t fb_size);
+void screensaver_show_one(int index_hint, uint8_t *png_buf, size_t png_buf_size,
+                          uint8_t *dtm1, uint8_t *dtm2, size_t fb_size);

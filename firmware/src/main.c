@@ -10,7 +10,7 @@
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/pm/device.h>
+#include <zephyr/random/random.h>
 #include <zephyr/sys/poweroff.h>
 #include <esp_sleep.h>
 #include <stdio.h>
@@ -40,6 +40,7 @@ static EXT_RAM uint8_t fb_dtm2[FB_PLANE_SIZE];
 static char    stored_etag[64];
 static uint8_t buf_index;
 static uint8_t partial_count;
+static uint8_t ss_last;  /* non-zero when previous display was a screensaver */
 
 static void enter_deep_sleep(int sleep_s)
 {
@@ -52,6 +53,15 @@ static void enter_deep_sleep(int sleep_s)
 static void do_fetch_and_display(const char *path, const char *etag_in,
                                   bool force_full)
 {
+	/* Exiting screensaver: force a full refresh to clear any ghosting. */
+	if (ss_last) {
+		force_full = true;
+		partial_count = 0;
+		nvs_store_partial_count_set(0);
+		ss_last = 0;
+		nvs_store_ss_last_set(0);
+	}
+
 	size_t bytes = 0;
 	char new_etag[64] = "";
 
@@ -117,15 +127,8 @@ int main(void)
 		return 0;
 	}
 
+	/* button_init() calls esp_sleep_enable_ext1_wakeup() directly */
 	button_init();
-
-	/* Enable GPIO wakeup at the device level — required for EXT1 wakeup */
-	const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-	if (device_is_ready(gpio0)) {
-		pm_device_wakeup_enable(gpio0, true);
-	} else {
-		LOG_WRN("gpio0 device not ready — button wakeup may not work");
-	}
 
 	/* ── Phase 2: Wakeup source detection ──────────────────── */
 	button_mask_t wakeup = button_get_wakeup_source();
@@ -141,6 +144,7 @@ int main(void)
 	nvs_store_etag_get(stored_etag, sizeof(stored_etag));
 	nvs_store_buf_index_get(&buf_index);
 	nvs_store_partial_count_get(&partial_count);
+	nvs_store_ss_last_get(&ss_last);
 
 	/* ── Phase 4: Wi-Fi ─────────────────────────────────────── */
 	LOG_INF("Connecting to Wi-Fi \"%s\"", WIFI_SSID);
@@ -163,19 +167,38 @@ int main(void)
 	if (mode == MODE_INACTIVE) {
 
 		if (btn_wake) {
-			/* Adjust buffer index if left/right triggered */
-			if (left_wake && buf_index > 0) {
-				buf_index--;
+			/* Show the requested display, then deep sleep 60 s so the
+			 * user can read it.  The next timer wake will show a
+			 * screensaver and sleep until the next scheduled event. */
+			char path[32];
+			if (left_wake || right_wake) {
+				if (left_wake && buf_index > 0) buf_index--;
+				else if (right_wake) buf_index++;
 				nvs_store_buf_index_set(buf_index);
-			} else if (right_wake) {
-				buf_index++;
-				nvs_store_buf_index_set(buf_index);
+				snprintf(path, sizeof(path), "/display/%u",
+				         (unsigned)buf_index);
+			} else {
+				strncpy(path, "/display.png", sizeof(path));
 			}
-			/* Show screensaver for up to 5 min, then fall through to sleep */
-			screensaver_run(png_buf, PNG_BUF_SIZE, fb_dtm1, fb_dtm2,
-			                FB_PLANE_SIZE);
+			nvs_store_etag_set("");
+			stored_etag[0] = '\0';
+			partial_count = 0;
+			nvs_store_partial_count_set(0);
+			do_fetch_and_display(path, NULL, true);
+
+			enter_deep_sleep(60);
+			return 0;
 		}
-		/* Timer wake in INACTIVE: no display update, just sleep */
+
+		/* Timer wake (including the 60 s wake after a button press):
+		 * show one screensaver image, then fall through to sleep until
+		 * the next scheduled event. */
+		partial_count = 0;
+		nvs_store_partial_count_set(0);
+		screensaver_show_one((int)sys_rand32_get(), png_buf, PNG_BUF_SIZE,
+		                     fb_dtm1, fb_dtm2, FB_PLANE_SIZE);
+		ss_last = 1;
+		nvs_store_ss_last_set(1);
 
 	} else if (mode == MODE_SCHEDULED_REFRESH) {
 

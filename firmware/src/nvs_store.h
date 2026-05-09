@@ -16,3 +16,7 @@ int nvs_store_buf_index_set(uint8_t idx);
 /** Consecutive partial/fast refresh counter — reset to 0 after forced full. */
 int nvs_store_partial_count_get(uint8_t *out);
 int nvs_store_partial_count_set(uint8_t count);
+
+/** Non-zero when the last display drawn was a screensaver. */
+int nvs_store_ss_last_get(uint8_t *out);
+int nvs_store_ss_last_set(uint8_t val);

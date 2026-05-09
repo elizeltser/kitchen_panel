@@ -9,6 +9,7 @@ LOG_MODULE_REGISTER(nvs_store, LOG_LEVEL_INF);
 #define KEY_ETAG   "dash/etag"
 #define KEY_BUFIDX "dash/bufidx"
 #define KEY_PCNT   "dash/partcnt"
+#define KEY_SSLAST "dash/sslast"
 
 int nvs_store_init(void)
 {
@@ -62,3 +63,18 @@ int nvs_store_partial_count_set(uint8_t count)
 {
 	return settings_save_one(KEY_PCNT, &count, sizeof(count));
 }
+
+int nvs_store_ss_last_get(uint8_t *out)
+{
+	ssize_t n = settings_load_one(KEY_SSLAST, out, sizeof(*out));
+	if (n < 0) {
+		*out = 0;
+	}
+	return 0;
+}
+
+int nvs_store_ss_last_set(uint8_t val)
+{
+	return settings_save_one(KEY_SSLAST, &val, sizeof(val));
+}
+

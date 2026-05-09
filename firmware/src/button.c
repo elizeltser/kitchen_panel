@@ -3,7 +3,6 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/pm/device.h>
 #include <zephyr/logging/log.h>
 #include <esp_sleep.h>
 
@@ -59,14 +58,14 @@ int button_init(void)
 			LOG_ERR("Button %s configure failed: %d", names[i], ret);
 			return ret;
 		}
-		/* GPIO_INT_TRIG_WAKE_LOW registers the pin with
-		 * esp_sleep_enable_ext1_wakeup_io() via the Zephyr GPIO driver,
-		 * enabling EXT1 deep-sleep wakeup for this pin. */
-		ret = gpio_pin_interrupt_configure_dt(btns[i], GPIO_INT_TRIG_WAKE_LOW);
-		if (ret) {
-			LOG_WRN("Button %s wakeup config failed: %d", names[i], ret);
-		}
 	}
+
+	/* Register all three button pins as EXT1 deep-sleep wakeup sources.
+	 * Done via ESP-IDF directly — does not require CONFIG_PM_DEVICE. */
+	uint64_t wake_mask = BIT64(BUTTON_GREEN_PIN) |
+	                     BIT64(BUTTON_LEFT_PIN)  |
+	                     BIT64(BUTTON_RIGHT_PIN);
+	esp_sleep_enable_ext1_wakeup(wake_mask, ESP_EXT1_WAKEUP_ANY_LOW);
 
 	LOG_INF("Buttons initialised (green=GPIO%d, left=GPIO%d, right=GPIO%d)",
 	        BUTTON_GREEN_PIN, BUTTON_LEFT_PIN, BUTTON_RIGHT_PIN);
