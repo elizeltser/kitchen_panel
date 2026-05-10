@@ -193,7 +193,7 @@ def draw_clock_zone(draw, has_birthdays: bool, scale: int = 1):
     s = scale
     now = datetime.now(TZ) + timedelta(minutes=1)
     time_str = f"{now.hour}:{now.minute:02d}"
-    date_str = now.strftime("%A, %B %-d")
+    date_str = now.strftime("%A, %B ") + str(now.day)
 
     ft = _font("Montserrat-Regular.ttf", 148 * s)
     fd = _font("Montserrat-Regular.ttf", 32 * s)
