@@ -4,14 +4,14 @@
 Personal smart dashboard on a Seeed Studio reTerminal E1001 (7.5" monochrome ePaper, 800×480).
 
 Two subsystems:
-- **server/** — FastAPI app on Arch Linux. Renders PNG, serves it, hosts admin panel.
+- **server/** — FastAPI app (Windows primary, cross-platform). Renders PNG, serves it, hosts admin panel.
 - **firmware/** — Zephyr RTOS app for the E1001's ESP32-S3. Polls server, decodes PNG, drives display.
 
 Full spec: FSD.md
 
 ## Key constraints
 - Image: exactly 800×480 px, PIL mode "L" (8-bit grayscale, 2× supersampled)
-- Server runs on Arch Linux — no Windows paths, no NSSM
+- Server runs on Windows (production) or Arch Linux (testing) — use pathlib for all paths, never hardcoded separators
 - Fonts: always ImageFont.truetype() from server/fonts/ — never PIL default fonts
 - HTTP client: always httpx.AsyncClient — never requests library
 - Secrets: load from server/secrets/.env — never hardcode
@@ -25,11 +25,15 @@ Full spec: FSD.md
 - Reminders: x=200, y=350, w=600, h=130  (hidden when empty)
 - Stocks: fetched but NOT rendered on screen
 
-## Quick start (server)
+## Quick start (server — Windows)
+  .venv\Scripts\Activate.ps1
+  cd server && uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+
+## Quick start (server — Linux/WSL)
   source .venv/bin/activate
   cd server && uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 
-## Quick start (firmware)
+## Quick start (firmware — Linux/WSL only)
   cd ~/zephyrproject
   west build -b reterminal_e1001/esp32s3/procpu ~/Documents/reTerminal/firmware
   west flash --runner esptool

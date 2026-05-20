@@ -11,4 +11,5 @@ build/
 *.egg-info/
 dist/
 docs/
+server/data/quotes.json
 server/data/screensavers/*.png

@@ -1,97 +1,106 @@
 # reTerminal ePaper Dashboard
 
 Personal smart dashboard on a Seeed Studio reTerminal E1001 (7.5" ePaper, 800×480).
-Displays time, weather, birthday reminders, stocks, and a daily quote.
+Displays time, weather, birthday reminders, and a daily quote.
 
 Full spec: [FSD.md](FSD.md)
 
 ---
 
-## Server Setup (Arch Linux)
+## Server Setup (Windows)
 
-```bash
-source .venv/bin/activate
-pip install -r server/requirements.txt
+**Prerequisites:** Python 3.12+, Git
+
+```powershell
+# Create and activate virtual environment
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# Install dependencies
+pip install -r server\requirements.txt
 
 # Copy and fill in secrets
-cp server/secrets/.env.example server/secrets/.env
-# edit server/secrets/.env — add STOCK_API_KEY, check paths
-
-# Download fonts (see server/fonts/README.md)
+copy server\secrets\.env.example server\secrets\.env
+# Edit .env — add STOCK_API_KEY, check Google credential paths
 
 # Run development server
 cd server
 uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-Admin panel: `http://<your-lan-ip>:8080/admin`
+Admin panel: `http://localhost:8080/admin`
 
 Force a re-render: `curl -X POST http://localhost:8080/refresh`
 
----
+View current display output in browser: `http://localhost:8080/display.png`
 
-## Running as a System Service (Arch Linux)
-
-Set up the server to start on boot and restart automatically on failure.
-
-**Create the service file:**
-
-```bash
-sudo nano /etc/systemd/system/epaper-dashboard.service
-```
-
-```ini
-[Unit]
-Description=ePaper Dashboard Server
-After=network.target
-
-[Service]
-Type=simple
-User=eli
-WorkingDirectory=/home/eli/Documents/reTerminal/server
-ExecStart=/home/eli/Documents/reTerminal/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080
-Restart=on-failure
-RestartSec=5s
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Enable and start:**
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable epaper-dashboard   # start on boot
-sudo systemctl start epaper-dashboard
-sudo systemctl status epaper-dashboard
-```
-
-**Managing the service (local or over SSH):**
-
-```bash
-sudo systemctl restart epaper-dashboard   # restart
-sudo systemctl stop epaper-dashboard      # stop
-sudo systemctl start epaper-dashboard     # start
-```
-
-**Reading logs** (systemd journal is a cyclic buffer — survives crashes):
-
-```bash
-journalctl -u epaper-dashboard -n 200          # last 200 lines
-journalctl -u epaper-dashboard -f              # follow live
-journalctl -u epaper-dashboard -b -1           # output from the previous boot (crash logs)
-journalctl -u epaper-dashboard --since "1h ago"
-```
+View calendar page: `http://localhost:8080/display/1`
 
 ---
 
-## Firmware Setup (Arch Linux → E1001)
+## Running as a Windows Service (NSSM)
+
+[NSSM](https://nssm.cc) runs the server as a Windows service with automatic restart on failure and built-in log rotation.
+
+**Install NSSM** — download from https://nssm.cc/download, place `nssm.exe` somewhere on your PATH (e.g. `C:\tools\nssm.exe`).
+
+**Create the service** (run PowerShell as Administrator):
+
+```powershell
+$root = "C:\Users\eli\Documents\reTerminal"
+$uvicorn = "$root\.venv\Scripts\uvicorn.exe"
+
+nssm install epaper-dashboard $uvicorn "main:app --host 0.0.0.0 --port 8080"
+nssm set epaper-dashboard AppDirectory "$root\server"
+
+# Auto-restart on failure, 5 second delay
+nssm set epaper-dashboard AppRestartDelay 5000
+
+# Log output to rotating files
+nssm set epaper-dashboard AppStdout "$root\logs\server.log"
+nssm set epaper-dashboard AppStderr "$root\logs\server-error.log"
+nssm set epaper-dashboard AppRotateFiles 1
+nssm set epaper-dashboard AppRotateBytes 1000000
+nssm set epaper-dashboard AppRotateOnline 1
+
+# Create logs folder
+mkdir "$root\logs"
+
+nssm start epaper-dashboard
+```
+
+**Managing the service:**
+
+```powershell
+nssm start   epaper-dashboard
+nssm stop    epaper-dashboard
+nssm restart epaper-dashboard
+nssm status  epaper-dashboard
+nssm remove  epaper-dashboard confirm   # uninstall
+```
+
+**Reading logs after a crash:**
+
+```powershell
+# Last 100 lines of output
+Get-Content C:\Users\eli\Documents\reTerminal\logs\server.log -Tail 100
+
+# Follow live
+Get-Content C:\Users\eli\Documents\reTerminal\logs\server.log -Wait -Tail 50
+
+# Previous rotated log (kept alongside current)
+Get-Content C:\Users\eli\Documents\reTerminal\logs\server.log.old -Tail 100
+```
+
+---
+
+## Firmware Setup (Linux / WSL required)
+
+The Zephyr toolchain does not run on Windows. Use WSL2 (Ubuntu or Arch) or a Linux machine.
 
 ```bash
 # One-time Zephyr setup
-sudo pacman -S cmake ninja python python-pip
+sudo pacman -S cmake ninja python python-pip   # Arch; use apt on Ubuntu
 pip install west esptool --break-system-packages
 west init ~/zephyrproject
 cd ~/zephyrproject && west update && west zephyr-export
@@ -104,18 +113,20 @@ git clone https://github.com/kikuchan/pngle firmware/lib/pngle
 $EDITOR firmware/src/config.h
 
 # Build and flash
-cd firmware
+cd ~/zephyrproject
 west build -b reterminal_e1001/esp32s3/procpu ~/Documents/reTerminal/firmware
-west flash --runner esp32 --esp-device /dev/ttyUSB0
+west flash --runner esptool
 ```
+
+Serial monitor: `west espressif monitor` or `screen /dev/ttyUSB0 115200`
 
 ---
 
-## Staged rollout
+## Staged Rollout
 
 | Stage | Goal |
 |---|---|
-| 0 | Document structure (this commit) |
+| 0 | Document structure |
 | 1 | Static test image on ePaper — prove hardware pipeline works |
 | 2 | ETag, PM sleep, scheduling, green-button wakeup |
 | 3 | Real clock + weather |
