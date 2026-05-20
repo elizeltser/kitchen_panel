@@ -7,7 +7,7 @@ One-time OAuth setup (run from server/ directory):
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -55,6 +55,58 @@ def authorize():
     creds = flow.run_local_server(port=0)
     TOKEN_FILE.write_text(creds.to_json())
     print(f"Token saved to {TOKEN_FILE}")
+
+
+async def get_month_events() -> list:
+    """
+    Return all events for the current month as [{"date": date, "title": str}].
+    Queries the primary calendar. Returns [] on auth error.
+    """
+    try:
+        creds = _get_creds()
+    except Exception as e:
+        log.warning("Calendar auth failed: %s", e)
+        return []
+
+    today = datetime.now(TZ).date()
+    first = date(today.year, today.month, 1)
+    last = date(today.year + (today.month == 12),
+                (today.month % 12) + 1, 1) - timedelta(days=1)
+
+    def _fetch():
+        svc = build("calendar", "v3", credentials=creds)
+        time_min = datetime(first.year, first.month, first.day, tzinfo=TZ).isoformat()
+        time_max = datetime(last.year, last.month, last.day, 23, 59, 59, tzinfo=TZ).isoformat()
+        result = (
+            svc.events()
+            .list(
+                calendarId="primary",
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=200,
+            )
+            .execute()
+        )
+        events = []
+        for ev in result.get("items", []):
+            title = ev.get("summary", "").strip()
+            if not title:
+                continue
+            start_str = ev["start"].get("date") or ev["start"].get("dateTime", "")[:10]
+            try:
+                ev_date = date.fromisoformat(start_str)
+            except ValueError:
+                continue
+            events.append({"date": ev_date, "title": title})
+        return events
+
+    try:
+        return await asyncio.to_thread(_fetch)
+    except Exception as e:
+        log.error("Calendar month fetch failed: %s", e)
+        return []
 
 
 async def get_birthdays_today() -> list:

@@ -14,12 +14,18 @@ SCREENSAVERS_DIR = Path(__file__).parent / "data" / "screensavers"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from sources.moonphase import get_moonphase
+    from sources.calendar_src import get_month_events
     try:
         state.moon_phase = get_moonphase()
         state.source_statuses["moon"] = "ok"
     except Exception:
         pass
+    try:
+        state.calendar_month_data = await get_month_events()
+    except Exception:
+        pass
     await state.do_render()
+    await state.do_render_calendar()
     start_scheduler()
     yield
     stop_scheduler()
@@ -58,15 +64,21 @@ async def force_refresh():
 
 @app.get("/display/{n}")
 async def display_n(n: int, request: Request):
-    if n != 0:
+    if n == 0:
+        png, etag = state.png_bytes, state.etag
+    elif n == 1:
+        png, etag = state.calendar_png_bytes, state.calendar_etag
+        if not png:
+            raise HTTPException(status_code=503, detail="Calendar not yet rendered")
+    else:
         raise HTTPException(status_code=404, detail="Buffer not found")
     if_none_match = request.headers.get("if-none-match", "")
-    if if_none_match == state.etag and state.etag:
+    if if_none_match == etag and etag:
         return Response(status_code=304)
     return Response(
-        content=state.png_bytes,
+        content=png,
         media_type="image/png",
-        headers={"ETag": state.etag, "Cache-Control": "no-cache"},
+        headers={"ETag": etag, "Cache-Control": "no-cache"},
     )
 
 

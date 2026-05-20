@@ -34,6 +34,14 @@ async def _fetch_calendar():
         state.calendar_data = []
 
 
+async def _fetch_calendar_month():
+    from sources.calendar_src import get_month_events
+    try:
+        state.calendar_month_data = await get_month_events()
+    except Exception as e:
+        log.error("Calendar month fetch failed: %s", e)
+
+
 async def _fetch_stocks():
     from sources.stocks import get_prices
     try:
@@ -64,16 +72,24 @@ async def _fetch_moonphase():
         state.source_statuses["moon"] = f"error: {e}"
 
 
+async def _eve_calendar_update():
+    """Evening: refresh today's reminders and calendar month view."""
+    await asyncio.gather(_fetch_calendar(), _fetch_calendar_month())
+    await state.do_render_calendar()
+
+
 async def _morning_fetch():
-    """Run all source fetches concurrently, then re-render."""
+    """Run all source fetches concurrently, then re-render both display buffers."""
     await asyncio.gather(
         _fetch_weather(),
         _fetch_calendar(),
         _fetch_stocks(),
         _select_quote(),
         _fetch_moonphase(),
+        _fetch_calendar_month(),
     )
     await state.do_render()
+    await state.do_render_calendar()
 
 
 def start_scheduler():
@@ -82,7 +98,7 @@ def start_scheduler():
     # Morning: fetch all sources at 05:45
     _sched.add_job(_morning_fetch, CronTrigger(hour=5, minute=45), id="morning")
     # Evening re-fetches
-    _sched.add_job(_fetch_calendar, CronTrigger(hour=18, minute=0), id="eve_cal")
+    _sched.add_job(_eve_calendar_update, CronTrigger(hour=18, minute=0), id="eve_cal")
     _sched.add_job(_fetch_stocks, CronTrigger(hour=17, minute=30), id="eve_stocks")
     # Clock tick — re-render every 60s so the time updates
     _sched.add_job(state.do_render, "interval", seconds=60, id="tick")
