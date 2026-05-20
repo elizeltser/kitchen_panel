@@ -8,7 +8,7 @@
 
 /* ── Server ─────────────────────────────────────────────────── */
 /* Set SERVER_HOST to the Arch Linux machine's LAN IP           */
-#define SERVER_HOST          "10.100.102.4"
+#define SERVER_HOST          "10.100.102.216"
 #define SERVER_PORT          8080
 #define SERVER_PATH          "/display.png"
 

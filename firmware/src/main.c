@@ -247,6 +247,8 @@ int main(void)
 		}
 	}
 
+	LOG_INF("Schedule: mode=%d local=%02d:%02d sleep=%ds",
+	        mode, now.tm_hour, now.tm_min, sleep_s);
 	enter_deep_sleep(sleep_s);
 	return 0;
 }

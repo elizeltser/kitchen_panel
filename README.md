@@ -30,6 +30,63 @@ Force a re-render: `curl -X POST http://localhost:8080/refresh`
 
 ---
 
+## Running as a System Service (Arch Linux)
+
+Set up the server to start on boot and restart automatically on failure.
+
+**Create the service file:**
+
+```bash
+sudo nano /etc/systemd/system/epaper-dashboard.service
+```
+
+```ini
+[Unit]
+Description=ePaper Dashboard Server
+After=network.target
+
+[Service]
+Type=simple
+User=eli
+WorkingDirectory=/home/eli/Documents/reTerminal/server
+ExecStart=/home/eli/Documents/reTerminal/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Enable and start:**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable epaper-dashboard   # start on boot
+sudo systemctl start epaper-dashboard
+sudo systemctl status epaper-dashboard
+```
+
+**Managing the service (local or over SSH):**
+
+```bash
+sudo systemctl restart epaper-dashboard   # restart
+sudo systemctl stop epaper-dashboard      # stop
+sudo systemctl start epaper-dashboard     # start
+```
+
+**Reading logs** (systemd journal is a cyclic buffer — survives crashes):
+
+```bash
+journalctl -u epaper-dashboard -n 200          # last 200 lines
+journalctl -u epaper-dashboard -f              # follow live
+journalctl -u epaper-dashboard -b -1           # output from the previous boot (crash logs)
+journalctl -u epaper-dashboard --since "1h ago"
+```
+
+---
+
 ## Firmware Setup (Arch Linux → E1001)
 
 ```bash
