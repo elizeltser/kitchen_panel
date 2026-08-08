@@ -83,13 +83,7 @@ nssm remove  epaper-dashboard confirm   # uninstall
 
 ```powershell
 # Last 100 lines of output
-Get-Content C:\Users\eli\Documents\reTerminal\logs\server.log -Tail 100
-
-# Follow live
-Get-Content C:\Users\eli\Documents\reTerminal\logs\server.log -Wait -Tail 50
-
-# Previous rotated log (kept alongside current)
-Get-Content C:\Users\eli\Documents\reTerminal\logs\server.log.old -Tail 100
+test C:\Users\eli\Documents\reTerminal\logs\server.log 
 ```
 
 ---
@@ -113,12 +107,12 @@ git clone https://github.com/kikuchan/pngle firmware/lib/pngle
 $EDITOR firmware/src/config.h
 
 # Build and flash
-cd ~/zephyrproject
+cd /opt/zephyrproject
 west build -b reterminal_e1001/esp32s3/procpu ~/Documents/reTerminal/firmware
-west flash --runner esptool
+west flash --runner esp32 --esp-device /dev/ttyUSB0
 ```
 
-Serial monitor: `west espressif monitor` or `screen /dev/ttyUSB0 115200`
+Serial monitor: `west espressif monitor --port /dev/ttyUSB0`
 
 ---
 

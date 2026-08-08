@@ -20,3 +20,7 @@ int nvs_store_partial_count_set(uint8_t count);
 /** Non-zero when the last display drawn was a screensaver. */
 int nvs_store_ss_last_get(uint8_t *out);
 int nvs_store_ss_last_set(uint8_t val);
+
+/** Last successful NTP epoch (seconds since Unix epoch). 0 = never synced. */
+int nvs_store_epoch_get(int64_t *out);
+int nvs_store_epoch_set(int64_t epoch);

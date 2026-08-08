@@ -163,12 +163,25 @@ void epaper_show_error(const char *msg)
 
 /* --- 4-gray helpers ---------------------------------------------------- */
 
-static void epaper_4gray_busy_wait(void)
+/* Generous ceiling for a single BUSY assertion. Full 4-gray DRF can take
+ * multiple seconds; this only exists to catch a panel that never releases
+ * BUSY (electrical glitch, brownout during PON, bad waveform) so the boot
+ * cycle can fail and retry instead of spinning forever. */
+#define EPAPER_BUSY_TIMEOUT_MS 15000
+
+static int epaper_4gray_busy_wait(void)
 {
 	/* gpio_pin_get_dt returns 1 = active = busy (active-low: low pin = busy) */
+	int64_t start = k_uptime_get();
 	while (gpio_pin_get_dt(&busy_gpio) > 0) {
+		if (k_uptime_get() - start > EPAPER_BUSY_TIMEOUT_MS) {
+			LOG_ERR("BUSY stuck low for over %d ms — panel unresponsive",
+			        EPAPER_BUSY_TIMEOUT_MS);
+			return -ETIMEDOUT;
+		}
 		k_msleep(5);
 	}
+	return 0;
 }
 
 static int epaper_4gray_cmd(uint8_t cmd, const uint8_t *data, size_t len)
@@ -199,7 +212,7 @@ int epaper_4gray_init(void)
 
 	if (epaper_4gray_cmd(0x04, NULL, 0)) return -EIO; /* PON */
 	k_msleep(100);
-	epaper_4gray_busy_wait();
+	if (epaper_4gray_busy_wait()) return -ETIMEDOUT;
 
 	if (epaper_4gray_cmd(0xE0, (uint8_t[]){0x02}, 1)) return -EIO; /* CCSET: TSFIX=1 */
 	if (epaper_4gray_cmd(0xE5, (uint8_t[]){0x5F}, 1)) return -EIO; /* TSSET: 4-gray OTP table */
@@ -216,14 +229,14 @@ int epaper_4gray_refresh(const uint8_t *dtm1, const uint8_t *dtm2, size_t plane_
 	if (epaper_4gray_cmd(0x13, dtm2, plane_len)) return -EIO; /* DTM2 plane */
 
 	if (epaper_4gray_cmd(0x04, NULL, 0)) return -EIO; /* PON */
-	epaper_4gray_busy_wait();
+	if (epaper_4gray_busy_wait()) return -ETIMEDOUT;
 
 	if (epaper_4gray_cmd(0x12, NULL, 0)) return -EIO; /* DRF */
 	k_msleep(100);
-	epaper_4gray_busy_wait();
+	if (epaper_4gray_busy_wait()) return -ETIMEDOUT;
 
 	if (epaper_4gray_cmd(0x02, NULL, 0)) return -EIO; /* POF */
-	epaper_4gray_busy_wait();
+	if (epaper_4gray_busy_wait()) return -ETIMEDOUT;
 
 	LOG_INF("4-gray refresh complete");
 	return 0;

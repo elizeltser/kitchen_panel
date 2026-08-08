@@ -14,6 +14,7 @@ target_sources(app PRIVATE
   src/button.c
   src/nvs_store.c
   src/screensaver.c
+  src/boot_log.c
   lib/pngle/pngle.c
   lib/pngle/miniz.c
 )

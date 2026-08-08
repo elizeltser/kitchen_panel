@@ -74,8 +74,8 @@ int button_init(void)
 
 button_mask_t button_get_wakeup_source(void)
 {
-	esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-	if (cause != ESP_SLEEP_WAKEUP_EXT1) {
+	uint32_t causes = esp_sleep_get_wakeup_causes();
+	if (!(causes & BIT(ESP_SLEEP_WAKEUP_EXT1))) {
 		return BUTTON_NONE;
 	}
 

@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 #include <time.h>
 
 /**
@@ -13,3 +14,6 @@ struct tm ntp_get_local_time(void);
 
 /** Raw UTC epoch seconds — for computing precise sleep durations. */
 time_t ntp_get_utc_now(void);
+
+/** NTP_SRC_* code describing the outcome of the last ntp_sync() call. */
+uint8_t ntp_get_last_src(void);

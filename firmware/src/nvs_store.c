@@ -10,6 +10,7 @@ LOG_MODULE_REGISTER(nvs_store, LOG_LEVEL_INF);
 #define KEY_BUFIDX "dash/bufidx"
 #define KEY_PCNT   "dash/partcnt"
 #define KEY_SSLAST "dash/sslast"
+#define KEY_EPOCH  "dash/epoch"
 
 int nvs_store_init(void)
 {
@@ -76,5 +77,19 @@ int nvs_store_ss_last_get(uint8_t *out)
 int nvs_store_ss_last_set(uint8_t val)
 {
 	return settings_save_one(KEY_SSLAST, &val, sizeof(val));
+}
+
+int nvs_store_epoch_get(int64_t *out)
+{
+	ssize_t n = settings_load_one(KEY_EPOCH, out, sizeof(*out));
+	if (n < 0) {
+		*out = 0;
+	}
+	return 0;
+}
+
+int nvs_store_epoch_set(int64_t epoch)
+{
+	return settings_save_one(KEY_EPOCH, &epoch, sizeof(epoch));
 }
 

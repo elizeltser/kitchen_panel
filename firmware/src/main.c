@@ -9,6 +9,9 @@
  * survive sleep is persisted in NVS (settings subsystem).
  */
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/watchdog.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/random/random.h>
 #include <zephyr/sys/poweroff.h>
@@ -26,6 +29,7 @@
 #include "button.h"
 #include "nvs_store.h"
 #include "screensaver.h"
+#include "boot_log.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
@@ -41,6 +45,46 @@ static char    stored_etag[64];
 static uint8_t buf_index;
 static uint8_t partial_count;
 static uint8_t ss_last;  /* non-zero when previous display was a screensaver */
+
+/* Watchdog — final backstop against any hang (BUSY stuck, a stuck socket
+ * call, etc.) that would otherwise leave the device frozen until someone
+ * notices and power-cycles it. 5 minutes is far beyond any single phase's
+ * own bounded timeout, so it only fires on a genuine hang; on fire it
+ * resets the SoC, which is equivalent to the manual power-cycle that
+ * currently clears the freeze. Fed at each phase boundary below. */
+#define WDT_TIMEOUT_MS 300000
+
+static const struct device *wdt_dev;
+static int wdt_channel_id = -1;
+
+static void watchdog_start(void)
+{
+	wdt_dev = DEVICE_DT_GET(DT_ALIAS(watchdog0));
+	if (!device_is_ready(wdt_dev)) {
+		LOG_WRN("Watchdog device not ready — hangs will not auto-recover");
+		wdt_dev = NULL;
+		return;
+	}
+
+	struct wdt_timeout_cfg wdt_config = {
+		.flags      = WDT_FLAG_RESET_SOC,
+		.window.min = 0,
+		.window.max = WDT_TIMEOUT_MS,
+	};
+
+	wdt_channel_id = wdt_install_timeout(wdt_dev, &wdt_config);
+	if (wdt_channel_id < 0 || wdt_setup(wdt_dev, 0) < 0) {
+		LOG_WRN("Watchdog setup failed — hangs will not auto-recover");
+		wdt_dev = NULL;
+	}
+}
+
+static void watchdog_feed(void)
+{
+	if (wdt_dev) {
+		wdt_feed(wdt_dev, wdt_channel_id);
+	}
+}
 
 static void enter_deep_sleep(int sleep_s)
 {
@@ -118,6 +162,9 @@ int main(void)
 
 	/* ── Phase 1: Hardware init ─────────────────────────────── */
 	nvs_store_init();
+	watchdog_start();
+	boot_log_init();
+	boot_log_dump();
 
 	if (epaper_init() != 0 || epaper_4gray_init() != 0) {
 		LOG_ERR("ePaper init failed — sleeping %d s", POLL_INTERVAL_INACTIVE_S);
@@ -126,6 +173,7 @@ int main(void)
 		sys_poweroff();
 		return 0;
 	}
+	watchdog_feed();
 
 	/* button_init() calls esp_sleep_enable_ext1_wakeup() directly */
 	button_init();
@@ -157,9 +205,11 @@ int main(void)
 		enter_deep_sleep(300);
 		return 0;
 	}
+	watchdog_feed();
 
 	/* ── Phase 5: Time sync ──────────────────────────────────── */
 	ntp_sync();
+	watchdog_feed();
 	struct tm now = ntp_get_local_time();
 	schedule_mode_t mode = schedule_get_mode(&now);
 
@@ -185,6 +235,7 @@ int main(void)
 			partial_count = 0;
 			nvs_store_partial_count_set(0);
 			do_fetch_and_display(path, NULL, true);
+			watchdog_feed();
 
 			enter_deep_sleep(60);
 			return 0;
@@ -197,6 +248,7 @@ int main(void)
 		nvs_store_partial_count_set(0);
 		screensaver_show_one((int)sys_rand32_get(), png_buf, PNG_BUF_SIZE,
 		                     fb_dtm1, fb_dtm2, FB_PLANE_SIZE);
+		watchdog_feed();
 		ss_last = 1;
 		nvs_store_ss_last_set(1);
 
@@ -216,6 +268,7 @@ int main(void)
 			nvs_store_etag_set("");
 			stored_etag[0] = '\0';
 			do_fetch_and_display("/display.png", NULL, true);
+			watchdog_feed();
 
 		} else if (left_wake || right_wake) {
 			/* Cycle display buffer */
@@ -229,10 +282,12 @@ int main(void)
 			stored_etag[0] = '\0';
 			snprintf(path, sizeof(path), "/display/%u", (unsigned)buf_index);
 			do_fetch_and_display(path, NULL, true);
+			watchdog_feed();
 
 		} else {
 			/* Normal poll — use ETag to skip unchanged display */
 			do_fetch_and_display("/display.png", stored_etag, false);
+			watchdog_feed();
 		}
 	}
 
@@ -249,6 +304,16 @@ int main(void)
 
 	LOG_INF("Schedule: mode=%d local=%02d:%02d sleep=%ds",
 	        mode, now.tm_hour, now.tm_min, sleep_s);
+
+	boot_log_entry_t log_entry = {
+		.epoch   = (int64_t)ntp_get_utc_now(),
+		.sleep_s = sleep_s,
+		.wakeup  = green_wake ? 1 : left_wake ? 2 : right_wake ? 3 : 0,
+		.ntp_src = ntp_get_last_src(),
+		.mode    = (uint8_t)mode,
+	};
+	boot_log_append(&log_entry);
+
 	enter_deep_sleep(sleep_s);
 	return 0;
 }
